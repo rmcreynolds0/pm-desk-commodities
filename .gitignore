@@ -1,0 +1,59 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# data — ignored by default, with a deliberate carve-out below.
+#
+#   data/raw/      NOT committed. Contains Datastream/LSEG-derived series
+#                  (basis_waha.csv, basis_domsouth.csv). That data is licensed
+#                  to the university, not to us — republishing it would breach
+#                  the licence. Everything here is regenerable from the fetch
+#                  functions in src/storage_stress/data/connectivity.py.
+#   data/live/     NOT committed. Live paper ledgers (books.db, xsec_books.db)
+#                  and run logs. Binary, and they mutate every trading day, so
+#                  committing them would produce a noisy diff on every mark.
+#   data/processed/ COMMITTED (see carve-out). These are the research outputs
+#                  the results write-up cites as evidence — the agent ladder,
+#                  null distributions and equity curves. ~730 KB, static once
+#                  written. A reader must be able to check the numbers.
+# NOTE ON THE PATTERN BELOW: it must be `data/*`, not `data/`. Git does not
+# descend into a directory excluded by a trailing-slash pattern, so a later
+# negation inside it can never match — `data/` + `!data/processed/` silently
+# ignores everything. Excluding the CONTENTS (`data/*`) keeps the directory
+# walkable so the re-includes below actually fire.
+data/*
+!data/processed/
+data/processed/*
+!data/processed/*.csv
+*.duckdb
+*.duckdb.wal
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# generated documents
+#
+# The PDF and DOCX deliverables are BUILD OUTPUTS, not source. Their source is
+# the matching .md in docs/, which is committed. Regenerate with:
+#     python scripts/md_to_pdf.py
+# Keeping binaries out means the .md stays the single source of truth — no
+# risk of a committed PDF drifting out of sync with the text it came from,
+# and no unreviewable binary diffs in the history.
+docs/pdf/
+docs/docx/
+
+# notebooks
+.ipynb_checkpoints/
+notebooks/scratch/
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/

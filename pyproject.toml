@@ -1,0 +1,52 @@
+[project]
+name = "storage-stress"
+version = "0.1.0"
+description = "Systematic NYMEX Henry Hub natural gas calendar-spread strategy driven by a storage deliverability stress index."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "statsmodels",
+    "requests",
+    "duckdb",
+    "pyyaml",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+# install with: pip install -e ".[live]"
+live = [
+    "ib_async>=2.0.1",   # IBKR paper/live execution (successor to the unmaintained ib_insync)
+]
+# install with: pip install -e ".[dashboard]"  (the Streamlit portfolio UI)
+dashboard = [
+    "streamlit>=1.35",
+    "plotly>=5.20",
+]
+# install with: pip install -e ".[dev]"
+dev = [
+    "pytest",
+    "ruff",
+    "nbformat",
+    "nbclient",
+    "ipykernel",
+    "jupyter",
+    "pre-commit",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

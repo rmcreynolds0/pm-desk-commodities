@@ -1,0 +1,60 @@
+# docker-compose.yml — the full always-on paper stack on one small VM.
+#
+#   ib-gateway : headless IB Gateway (paper) with IBC auto-login/auto-restart.
+#                Community image, widely used for exactly this purpose.
+#   engine     : this repo's scheduler -> fires decide (weekly) + mark (daily)
+#   dashboard  : Streamlit portfolio dashboard on port 8501
+#
+# BRING-UP (on the VM):
+#   1. copy the repo up (git clone) and `cp .env.example .env`, fill in
+#      TWS_USERID / TWS_PASSWORD (IBKR paper login) + EIA_API_KEY.
+#   2. docker compose up -d --build
+#   3. browse to http://<vm-ip>:8501 for the dashboard.
+#
+# NOTES
+#   * The gateway image restarts the session nightly by itself; the engine's
+#     connection retries (live.yaml ibkr.connect_retries) absorb that window.
+#   * data/ is bind-mounted so books.db + logs survive rebuilds and can be
+#     copied off the VM for analysis at summer's end.
+#   * The engine reaches the gateway at host "ib-gateway" — live.yaml's
+#     ibkr.host is overridden here via IBKR_HOST (read by .env loading?  No:
+#     compose sets it as an env var and run_agents.py loads .env first, so
+#     set IBKR_HOST=ib-gateway in the VM's .env — see .env.example).
+
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${TWS_USERID}          # IBKR paper username (from .env)
+      TWS_PASSWORD: ${TWS_PASSWORD}      # IBKR paper password (from .env)
+      TRADING_MODE: paper                # NEVER change on this stack
+      READ_ONLY_API: "no"                # we place (paper) orders
+      TWOFA_TIMEOUT_ACTION: restart
+    ports:
+      - "127.0.0.1:4002:4002"           # localhost only — not exposed publicly
+
+  engine:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - ib-gateway
+    environment:
+      # Engine must dial the gateway CONTAINER, not localhost.
+      IBKR_HOST: ib-gateway
+      EIA_API_KEY: ${EIA_API_KEY}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      TZ: America/New_York               # scheduler logs in ET for sanity
+    volumes:
+      - ./data:/app/data                 # ledger + logs persist on the host
+      - ./config:/app/config             # edit schedule/params without rebuild
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"                      # the portfolio dashboard
+    volumes:
+      - ./data:/app/data                 # read-only consumer of books.db
+      - ./config:/app/config

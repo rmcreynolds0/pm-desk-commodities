@@ -1,0 +1,63 @@
+# Non-secret configuration. Secrets live in .env.
+# These are the PRE-REGISTERED strategy parameters (see docs/LOCKED_STRATEGY.md).
+# Changing a value here changes the strategy without touching code — keep this
+# file under version control so every parameter change is auditable.
+
+paths:
+  data_raw: data/raw
+  data_interim: data/interim
+  data_processed: data/processed
+  data_live: data/live
+  duckdb: data/processed/storage_stress.duckdb
+
+backtest:
+  train_start: "2017-01-01"
+  walk_forward_step_years: 1
+  test_end: "2025-12-31"
+
+signal:
+  convex_k: 4.0            # stress transform steepness (perturbation range 3.0-5.0)
+  ewma_span_weeks: 3
+  rolling_window_years: 3
+  salt_max_rate_bcf_wk: 90.0   # illustrative; refresh annually from EIA Form 191
+
+regime_gate:
+  realized_vol_weeks: 13
+  top_third_percentile: 66.6
+
+entry:
+  dsi_entry_z: 2.0         # perturbation range 1.5-2.5
+  agent_one_z: 1.5
+  exit_revert_frac: 0.60
+  max_hold_days: 42
+  stop_vol_multiple: 2.0
+
+seasons:
+  injection_months: [4, 5, 6, 7, 8, 9, 10]   # Apr-Oct -> Trade A (sell spread)
+  withdrawal_months: [11, 12, 1, 2, 3]        # Nov-Mar -> Trade B (buy spread)
+
+sizing:
+  capital: 100000
+  risk_per_sd: 0.005       # ~0.5% of book per SD of daily spread move
+  point_value: 10000       # $ per 1.00 spread move per NG contract
+  regime_weight_min: 0.5
+  regime_weight_max: 1.0
+
+costs:
+  slippage_ticks_per_leg: 1.0
+  tick_value: 10.0
+  stress_test_ticks: [2.0, 3.0]
+
+risk_limits:
+  var_limit_pct: 0.02
+  drawdown_halve_pct: 0.06
+  drawdown_liquidate_pct: 0.10
+  max_open_spreads: 5
+  max_tenor_risk_pct: 0.40
+  participation_cap_pct: 0.05
+
+kill_switches:
+  min_rolling_24m_sharpe: 0.5
+  max_drawdown_pct: 0.12
+  dsi_must_beat_one_sharpe: 0.4
+  feed_outage_weeks: 4

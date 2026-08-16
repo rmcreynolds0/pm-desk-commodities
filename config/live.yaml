@@ -1,0 +1,101 @@
+# live.yaml — configuration for the always-on, per-agent paper-trading framework.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# settings.yaml holds the PRE-REGISTERED strategy parameters (signal windows,
+# entry thresholds, risk limits). This file holds everything specific to the
+# LIVE/PAPER deployment: which agents run, how orders are attributed to each
+# agent's book, when the jobs fire, and how the engine reaches IB Gateway.
+# Keeping them separate means the locked strategy stays untouched while the
+# deployment details evolve.
+#
+# ATTRIBUTION MODEL (one IBKR paper account, N logical books)
+# -----------------------------------------------------------
+# IBKR paper gives a single account with no sub-accounts. Separation is
+# achieved in three layers:
+#   1. order_ref   — every order the engine places is tagged with the agent's
+#                    name via the IBKR `orderRef` field, so every fill in the
+#                    account history is attributable to exactly one agent.
+#   2. ledger      — data/live/books.db (SQLite) is the SOURCE OF TRUTH for
+#                    each agent's virtual capital, positions, fills and equity.
+#                    The shared account NetLiq is never used for performance,
+#                    because it mixes all agents together.
+#   3. client_id   — each process that connects to IB Gateway needs a unique
+#                    clientId. The engine uses one connection (engine_client_id)
+#                    for all agents; per-agent ids are reserved for future use
+#                    (e.g. running agents as separate processes).
+
+ibkr:
+  host: "127.0.0.1"        # inside docker-compose this becomes "ib-gateway"
+  port: 4002               # IB Gateway PAPER port (TWS paper would be 7497)
+  engine_client_id: 20     # the single connection the engine uses for data+orders
+  # Delayed market data is sufficient: decisions are weekly, marks are daily
+  # closes. 3 = delayed, 4 = delayed-frozen (see IBKR reqMarketDataType docs).
+  market_data_type: 4
+  connect_timeout_s: 15
+  connect_retries: 3       # gateway restarts nightly; retry before giving up
+
+# THE AGENT LADDER
+# ----------------
+# Each rung adds exactly one more piece of information to the signal, so a
+# performance gap between adjacent rungs isolates the value of that piece:
+#   zero : coin flip                          -> null benchmark / plumbing check
+#   one  : raw salt net-flow z-score          -> + real storage data
+#   two  : convex+smoothed+deseasonalized z   -> + utilization/convexity/seasonal removal
+#   dsi  : residualized z + vol regime gate   -> + basis residualization + gating
+# `enabled: false` removes a rung without deleting its history from the ledger.
+agents:
+  agent_zero:
+    enabled: true
+    client_id: 21          # reserved (engine currently shares one connection)
+    capital: 200000        # virtual book size, $; P&L is tracked off this
+                           # (raised from 100k so 1 NG contract ≈ the locked
+                           #  0.5%-per-SD risk on the volatile seasonal spread)
+    seed: 7                # rng seed -> reproducible coin flips
+    max_hold_days: 14      # proposal's Agent Zero spec: 14-day time stop
+  agent_one:
+    enabled: true
+    client_id: 22
+    capital: 200000
+    entry_z: 1.5           # from settings.yaml entry.agent_one_z (locked)
+    max_hold_days: 42
+  agent_two:
+    enabled: true
+    client_id: 23
+    capital: 200000
+    entry_z: 1.5           # same threshold as agent_one so the ONLY difference
+                           # vs one is the signal construction, not the gate
+    max_hold_days: 42
+  agent_dsi:
+    enabled: true
+    client_id: 24
+    capital: 200000
+    entry_z: 2.0           # from settings.yaml entry.dsi_entry_z (locked)
+    max_hold_days: 42
+
+# JOB SCHEDULE (all times US/Eastern; scheduler converts internally)
+# ------------------------------------------------------------------
+# decide: weekly, after the EIA storage print (Thu 10:30 ET) AND after the
+#         NYMEX NG settle (~14:30 ET), so the decision uses a complete week.
+# mark:   every weekday after settle — marks open positions to market,
+#         checks exit rules (time stop / 2x-vol stop), records equity.
+schedule:
+  decide_day: "thu"
+  decide_time: "16:00"
+  mark_days: ["mon", "tue", "wed", "thu", "fri"]
+  mark_time: "17:15"
+  timezone: "US/Eastern"
+
+# DATA SETTINGS for the live signal computation
+data:
+  history_start: "2017-01-01"   # how far back to pull EIA storage for z-windows
+  spread_bar_duration: "2 Y"    # IBKR historical duration for spread legs
+  spread_vol_window_weeks: 30   # rolling std window for inverse-vol sizing
+  # Basis inputs for agent_dsi's residualization step. "synthetic" keeps the
+  # seeded random-walk placeholder (documented hybrid mode) until a real
+  # Waha / Dom South feed is wired in (see docs/FRAMEWORK.md gap table).
+  basis_mode: "synthetic"
+
+paths:
+  books_db: data/live/books.db  # the per-agent ledger (SQLite, WAL mode)
+  log_dir: data/live/logs       # one log file per job run, for debugging

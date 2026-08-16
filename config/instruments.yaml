@@ -1,0 +1,28 @@
+# Instrument and data-source reference. Series IDs verified against EIA API v2.
+
+futures:
+  symbol: NG
+  exchange: NYMEX
+  currency: USD
+  contract_size_mmbtu: 10000
+  min_tick: 0.001          # $/MMBtu
+  tick_value_usd: 10.0     # 0.001 * 10000
+  # never take delivery: close >=5 business days before delivery notice
+  close_before_delivery_business_days: 5
+
+eia_series:
+  # route: natural-gas/stor/wkly  (facets[series][]=<id>)
+  salt_south_central: NW2_EPG0_SSO_R33_BCF
+  nonsalt_south_central: NW2_EPG0_SNO_R33_BCF
+  lower48_total: NW2_EPG0_SWO_R48_BCF
+  # route: natural-gas/pri/fut  (facets[series][]=RNGC1 / RNGC2 ...)
+  henry_hub_c1: RNGC1
+  henry_hub_c2: RNGC2
+
+basis_hubs:
+  - waha
+  - domsouth
+
+endpoints:
+  eia_base: "https://api.eia.gov/v2"
+  noaa_cdo: "https://www.ncdc.noaa.gov/cdo-web/api/v2/"

@@ -1,0 +1,155 @@
+# xsec.yaml — FROZEN SPECIFICATION for the Pivot A cross-sectional strategy.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Every parameter below was chosen during research and is now FROZEN. Freezing
+# is what makes forward paper trading a genuine out-of-sample test: if these can
+# drift while the strategy runs, the "out-of-sample" result is just more
+# in-sample fitting with extra steps.
+#
+# RULE: changing any value here invalidates the forward test from that date.
+# If a change is genuinely warranted, record it in docs/PIVOT_A_STRATEGY.md
+# with the date and reason, and treat the forward record as restarting.
+#
+# Research results this spec produced (2000-2026 backtest):
+#   agent_3  Sharpe 0.61 base / 0.70 vol-targeted / 0.78 post-2019 at 3x costs
+#   All four rungs beat a 200-seed null distribution.
+
+# ---------------------------------------------------------------------------
+# UNIVERSE — 23 USD commodity futures, four sectors.
+# `ib` blocks map each market to its Interactive Brokers contract. Multipliers
+# are NOT hardcoded: they are read from IBKR at runtime via reqContractDetails,
+# because a wrong multiplier silently mis-sizes every position in that market.
+# ---------------------------------------------------------------------------
+universe:
+  # --- energy (NYMEX) ---
+  CL:  {name: "Crude Oil (WTI)",     ib_symbol: CL,  exchanges: [NYMEX]}
+  NG:  {name: "Natural Gas",         ib_symbol: NG,  exchanges: [NYMEX]}
+  HO:  {name: "Heating Oil",         ib_symbol: HO,  exchanges: [NYMEX]}
+  RB:  {name: "Gasoline RBOB",       ib_symbol: RB,  exchanges: [NYMEX]}
+  # --- metals (COMEX / NYMEX) ---
+  GC:  {name: "Gold",                ib_symbol: GC,  exchanges: [COMEX]}
+  SI:  {name: "Silver",              ib_symbol: SI,  exchanges: [COMEX]}
+  HG:  {name: "Copper",              ib_symbol: HG,  exchanges: [COMEX]}
+  PL:  {name: "Platinum",            ib_symbol: PL,  exchanges: [NYMEX]}
+  PA:  {name: "Palladium",           ib_symbol: PA,  exchanges: [NYMEX]}
+  # --- grains / oilseeds (CBOT) ---
+  ZC:  {name: "Corn",                ib_symbol: ZC,  exchanges: [CBOT]}
+  ZS:  {name: "Soybeans",            ib_symbol: ZS,  exchanges: [CBOT]}
+  ZM:  {name: "Soybean Meal",        ib_symbol: ZM,  exchanges: [CBOT]}
+  ZL:  {name: "Soybean Oil",         ib_symbol: ZL,  exchanges: [CBOT]}
+  ZO:  {name: "Oats",                ib_symbol: ZO,  exchanges: [CBOT]}
+  KE:  {name: "Wheat (Hard Red Wtr)", ib_symbol: KE, exchanges: [CBOT]}
+  # MWE (Minneapolis wheat) REMOVED 2026-08-12: does not resolve on IBKR.
+  # MGEX is rejected as a destination (the exchange was absorbed by MIAX) and
+  # CBOT has no security definition for it. The backtest was re-run on the
+  # remaining 22 markets so the forward comparison is like-for-like.
+  #
+  # A further narrowing to 17 markets was tested and REJECTED — see
+  # docs/SUMMER_SUMMARY.md §6. Dropping GC/HO/GF/HG/PA made carry stop beating
+  # chance and worsened drawdown by 17 points. The account is sized to the
+  # universe, not the universe to the account.
+  # --- softs (ICE US / NYBOT) ---
+  CC:  {name: "Cocoa",               ib_symbol: CC,  exchanges: [NYBOT, ICEUS]}
+  KC:  {name: "Coffee C",            ib_symbol: KC,  exchanges: [NYBOT, ICEUS]}
+  SB:  {name: "Sugar No.11",         ib_symbol: SB,  exchanges: [NYBOT, ICEUS]}
+  CT:  {name: "Cotton No.2",         ib_symbol: CT,  exchanges: [NYBOT, ICEUS]}
+  OJ:  {name: "Orange Juice",        ib_symbol: OJ,  exchanges: [NYBOT, ICEUS]}
+  # --- livestock (CME) ---
+  LE:  {name: "Live Cattle",         ib_symbol: LE,  exchanges: [CME]}
+  GF:  {name: "Feeder Cattle",       ib_symbol: GF,  exchanges: [CME]}
+
+# ---------------------------------------------------------------------------
+# SIGNAL — the three factors and the agent ladder.
+# ---------------------------------------------------------------------------
+signal:
+  momentum_months: 12        # trailing window for momentum and basis-momentum
+  history_start: "2000-01-01"
+  # Each rung sees exactly one more factor. agent_0 sees nothing (null).
+  agents:
+    agent_0: []
+    agent_1: [carry]
+    agent_2: [carry, mom]
+    agent_3: [carry, mom, basis_mom]
+  # Blend: equal-weight mean of cross-sectionally z-scored factors.
+  # No fitted factor weights -- deliberate, to avoid in-sample optimisation.
+  blend: equal_weight_zscore
+
+# ---------------------------------------------------------------------------
+# PORTFOLIO CONSTRUCTION
+# ---------------------------------------------------------------------------
+portfolio:
+  quantile: 0.3333           # long top third, short bottom third
+  min_markets: 6             # need >=2 per side or it is noise, not a factor
+  dollar_neutral: true       # +1 gross long / -1 gross short, net 0
+  rebalance: monthly         # month-end; held between
+  vol_target: 0.10           # 10% annualised
+  vol_window_days: 63        # trailing realised-vol estimate
+  max_leverage: 3.0          # cap; inverse-vol rules explode after quiet spells
+
+# ---------------------------------------------------------------------------
+# CAPITAL & EXECUTION
+# ---------------------------------------------------------------------------
+capital:
+  # Per-agent virtual book. Four books share one IBKR paper account; separation
+  # is by orderRef tag + the local ledger, exactly as in the NG framework.
+  #
+  # WHY $10M (measured, not guessed). Contract sizes in this universe span 27x
+  # -- gold ~$443k vs oats ~$16k. Book size therefore decides which markets can
+  # hold even ONE contract, and whole-lot rounding decides how far live weights
+  # drift from target:
+  #     $250k  -> only 11/22 markets tradeable, 31% avg weight error
+  #     $2.5M  -> 22/22,  8.8% error
+  #     $10M   -> 22/22,  1.9% error   <-- chosen
+  # Below ~$2.5M half the universe silently rounds to zero contracts, which
+  # would quietly turn this into a different, smaller strategy than the one
+  # backtested. This is a paper account, so book size is a free parameter and
+  # is set to keep lot-size noise from contaminating the signal test.
+  book_size: 10000000
+  # Refuse to open a position whose rounded size is 0 contracts. Silently
+  # dropping small markets changes the strategy from the one backtested, so
+  # the engine records the omission instead of hiding it.
+  min_contracts: 1
+  # Hard ceiling on gross notional as a multiple of book size. Futures margin
+  # is 3-12%, so 4x gross is comfortably financeable, but the cap prevents an
+  # unnoticed sizing bug from taking a wildly levered position.
+  max_gross_leverage: 4.0
+
+costs:
+  # Research assumption: 10bps per 1.0 of gross weight traded. Retained here so
+  # live fills can be reconciled against what the backtest assumed.
+  bps_per_unit_turnover: 10.0
+
+# ---------------------------------------------------------------------------
+# IBKR CONNECTION — mirrors config/live.yaml; env vars override.
+# ---------------------------------------------------------------------------
+ibkr:
+  host: "127.0.0.1"
+  port: 4002
+  client_id: 30              # distinct from the NG engine's 20
+  market_data_type: 4        # delayed-frozen: sufficient for a monthly rebalance
+  connect_timeout_s: 20
+  connect_retries: 3
+
+# ---------------------------------------------------------------------------
+# SCHEDULE (US/Eastern)
+# ---------------------------------------------------------------------------
+schedule:
+  # 10:30 ET is the window when ALL 22 markets are liquid simultaneously:
+  # grains (CBOT) open 09:30, softs (NYBOT) trade ~04:00-14:00, energy/metals
+  # run nearly 24h. Rebalancing outside that window means thin books and worse
+  # fills in the agricultural names -- and the first live attempt failed partly
+  # because it ran at 17:50 ET, inside the CME settlement break, when orders
+  # simply queue as PreSubmitted instead of filling.
+  rebalance_day: "last_business_day"   # monthly
+  rebalance_time: "10:30"
+  # First run is forced on this date regardless of the monthly calendar, so the
+  # book goes live immediately rather than waiting for month-end.
+  first_run_date: "2026-08-13"
+  mark_days: [mon, tue, wed, thu, fri]
+  mark_time: "16:30"                   # after most closes, before the CME break
+  timezone: "US/Eastern"
+
+paths:
+  books_db: data/live/xsec_books.db    # separate ledger from the NG books
+  log_dir: data/live/logs
