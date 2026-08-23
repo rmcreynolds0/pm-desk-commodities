@@ -1,8 +1,15 @@
 # Dockerfile — one image serves BOTH long-running services:
-#   * engine    : scripts/scheduler.py  (fires decide/mark jobs on schedule)
-#   * dashboard : streamlit run dashboard/app.py
+#   * engine    : scripts/xsec_scheduler.py  (rebalance monthly + mark daily)
+#   * dashboard : streamlit run dashboard/xsec_live.py
 # The service chooses its command in docker-compose.yml; keeping a single
 # image means one build, one dependency set, no drift between the two.
+#
+# THESE POINT AT THE CROSS-SECTIONAL (PIVOT A) STRATEGY, NOT THE NG BOOK.
+# The natural-gas strategy was retired after it failed its own week-1 regime
+# gate (see docs/SUMMER_SUMMARY.md). Its scheduler (scripts/scheduler.py) and
+# dashboard (dashboard/app.py) are still in the repo as a research record, but
+# deploying them would put a strategy we deliberately killed back into
+# production. If you change the CMD below, change it knowing that.
 FROM python:3.11-slim
 
 # tzdata: the scheduler converts to US/Eastern via zoneinfo, which needs the
@@ -27,4 +34,8 @@ COPY dashboard ./dashboard
 
 # data/ (ledger, logs) is a VOLUME in compose — state must outlive the
 # container. Nothing is baked into the image.
-CMD ["python", "scripts/scheduler.py"]
+#
+# Unbuffered (-u) so scheduler prints reach `docker compose logs` immediately.
+# Without it Python block-buffers stdout when it is a pipe, and the logs stay
+# empty for hours — which looks exactly like a hung container.
+CMD ["python", "-u", "scripts/xsec_scheduler.py"]

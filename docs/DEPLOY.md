@@ -75,21 +75,20 @@ rsync -avz --exclude data/live --exclude .venv --exclude '__pycache__' \
 **Create `.env` on the VM** (never commit it; create it fresh here):
 ```bash
 cat > .env <<'EOF'
-# EIA storage feed
-EIA_API_KEY=your_free_key_from_eia.gov/opendata
-
-# Engine reaches the gateway CONTAINER, not localhost
-IBKR_HOST=ib-gateway
-IBKR_PORT=4002
-
-# Headless IB Gateway login (PAPER credentials)
+# Headless IB Gateway login (PAPER credentials) — the ONLY secrets this
+# stack needs.
 TWS_USERID=your_ibkr_paper_username
 TWS_PASSWORD=your_ibkr_paper_password
 EOF
 chmod 600 .env               # readable only by you
 ```
-(Use your own EIA key if you have one. R2 basis keys are optional and only
-needed later when you replace the synthetic basis feed.)
+
+**No data-provider keys are required.** The cross-sectional strategy takes its
+signals from IBKR itself — both legs of the term structure plus a year of daily
+bars — so the live stack has no external data dependency. The R2 mirror is
+research-only and was measured stale by 43–243 days per market, which is why it
+does not drive live decisions. `IBKR_HOST` / `IBKR_PORT` are set directly in
+`docker-compose.yml` and need not be repeated here.
 
 ---
 
@@ -107,18 +106,43 @@ docker compose logs -f ib-gateway
 # Ctrl-C to stop tailing (containers keep running)
 ```
 
-Then confirm the engine can reach it and the ledger is alive:
+**Check the account is big enough BEFORE trading.** This is the step that has
+failed most often. Run the rebalance as a dry run — it computes and prints
+target positions without sending a single order:
 ```bash
-docker compose exec engine python scripts/run_agents.py --job status
+docker compose exec engine python scripts/run_xsec_live.py --job rebalance --dry-run
 ```
-You should see the four books at their $200k base. If the gateway isn't ready
-yet, the engine retries (configured in `config/live.yaml`).
 
-**Force a first decision immediately** (optional — otherwise it waits for the
-next scheduled Thursday):
+Read the `[SIZING]` line it prints. The engine sizes against the account's real
+equity, not the configured book:
+
+```
+capacity_per_agent = (equity × 0.50) / (2 × n_agents × 0.12)
+```
+
+Inverted, that gives the paper equity each book size requires:
+
+| Target book/agent | Paper equity needed | Result |
+|---|---|---|
+| $250k | $480k | only 11/22 markets tradeable, 31% avg weight error |
+| **$2.5M** | **$4.8M** | 22/22 markets, 8.8% error — **minimum viable** |
+| $10M | $19.2M | 22/22 markets, 1.9% error — the `xsec.yaml` target |
+
+If more than **30%** of intended positions round to zero contracts, the engine
+aborts the entire rebalance *before* sending anything, and prints why. That is
+correct behaviour, not a fault: a book that can only hold half its universe is
+a different, smaller strategy than the one that was backtested.
+
+The fix is to raise the paper balance — IBKR Client Portal → Settings → Paper
+Trading Account → reset with a larger starting balance — **not** to narrow the
+universe. A 17-market narrowing was tested and rejected: carry stopped beating
+chance and drawdown worsened by 17 points (`docs/SUMMER_SUMMARY.md` §6).
+
+**Then launch for real** (optional — otherwise the scheduler picks it up at the
+next 10:30 ET weekday slot, since the launch is self-healing):
 ```bash
-docker compose exec engine python scripts/run_agents.py --job decide
-docker compose exec engine python scripts/run_agents.py --job mark
+docker compose exec engine python scripts/run_xsec_live.py --job rebalance
+docker compose exec engine python scripts/run_xsec_live.py --job mark
 ```
 
 ---
@@ -145,12 +169,18 @@ the zero-config secure default.)
 
 ## 6. Ongoing operation
 
-- The scheduler fires automatically (times in `config/live.yaml`, US/Eastern):
-  **decide** Thursdays 16:00, **mark** weekdays 17:15.
-- Everything persists in `./data` on the VM: `books.db` (the ledger) and
+- The scheduler fires automatically (times in `config/xsec.yaml`, US/Eastern):
+  **rebalance** monthly on the last business day at 10:30, **mark** every
+  weekday at 16:30.
+- **The launch is self-healing.** On or after `first_run_date`, *any* weekday
+  at 10:30 ET with an empty book triggers the launch. An earlier one-shot
+  design missed its single minute because the host was asleep and never
+  retried, leaving the book empty for days — missing a slot should cost a day,
+  not the experiment.
+- Everything persists in `./data` on the VM: `xsec_books.db` (the ledger) and
   `logs/`. Copy the ledger off for analysis anytime:
   ```bash
-  scp <user>@<vm-ip>:~/storage-stress/data/live/books.db ./books-$(date +%F).db
+  scp <user>@<vm-ip>:~/storage-stress/data/live/xsec_books.db ./xsec-$(date +%F).db
   ```
 - Update after a code change: `git pull` (or rsync) then
   `docker compose up -d --build`.
@@ -164,9 +194,13 @@ the zero-config secure default.)
 | Symptom | Cause / fix |
 |---------|-------------|
 | Gateway log shows a 2FA / login loop | The login requires phone 2FA — use a paper-only credential (see §0). |
-| `engine` can't connect (connection refused) | Gateway not finished starting, or `IBKR_HOST` not `ib-gateway` in `.env`. The engine retries; check `docker compose logs ib-gateway`. |
+| `engine` can't connect (connection refused) | Gateway not finished starting, or `IBKR_HOST` not `ib-gateway`. The engine retries; check `docker compose logs ib-gateway`. |
 | Orders warn `Error 10349 (TIF set to DAY)` | Benign — IBKR adjusts the market order's time-in-force; the order still fills. |
-| No trades appear | Expected in weeks where signals are below threshold; only `agent_zero` trades every week. Check the decisions in the dashboard's signal-history panel. |
+| **`ABORTED before trading — N/M positions round to 0`** | **The account is too small.** Working as designed. See the sizing table in §4 and raise the paper balance; do not narrow the universe. |
+| Orders rejected near expiry | IBKR blocks new positions inside its delivery window. `DEFAULT_GUARD_DAYS = 25` in `xsec_contracts.py` already rolls past this; if a market still trips it, that market's guard needs raising. |
+| Order rejected for size | IBKR caps non-algo futures orders at 64 lots. The engine splits large orders automatically (`MAX_ORDER_LOTS = 60`). |
+| Everything sits `PreSubmitted`, nothing fills | Ran outside market hours — most likely inside the CME settlement break. The 10:30 ET rebalance exists precisely to avoid this. |
+| No trades appear | Check §3 of the dashboard: decisions are recorded even when untraded, with the reason. A wall of `rounds to 0 contracts` means under-capitalisation. |
 | Gateway disconnects nightly | Normal — the image restarts the session ~daily to re-auth; the engine's retries absorb it. |
 | Dashboard unreachable | Use the SSH tunnel in §5; the port is not meant to be public. |
 
