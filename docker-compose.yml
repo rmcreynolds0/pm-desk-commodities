@@ -1,8 +1,7 @@
 # docker-compose.yml — always-on paper stack for the CROSS-SECTIONAL (Pivot A)
 # strategy, on one small VM. Runs with your laptop off.
 #
-#   ib-gateway : headless IB Gateway (paper) with IBC auto-login/auto-restart.
-#                Community image, widely used for exactly this purpose.
+#   ib-gateway : headless IB Gateway (paper) with IBC auto-login/auto-restart
 #   engine     : scripts/xsec_scheduler.py -> rebalance (monthly, 10:30 ET)
 #                and mark (every weekday, 16:30 ET)
 #   dashboard  : Streamlit live ledger view, localhost:8501 on the VM
@@ -10,78 +9,110 @@
 # THE VM MUST BE x86-64 (amd64). IB Gateway has no ARM build, so Oracle's free
 # ARM tier and Raspberry Pi cannot run this stack at all. See docs/DEPLOY.md §1.
 #
-# BRING-UP (on the VM):
-#   1. git clone the repo, then `cp .env.example .env` and fill in
-#      TWS_USERID / TWS_PASSWORD (IBKR *paper* login).
-#   2. docker compose up -d --build
-#   3. SSH-tunnel to reach the dashboard:  ssh -L 8501:localhost:8501 <vm>
+# BRING-UP:  bash deploy/bootstrap.sh     (does everything below for you)
+# MANUAL:    cp .env.example .env && edit && docker compose up -d --build
 #
-# NOTES
-#   * The gateway image restarts the session nightly by itself; the engine's
-#     connection retries (xsec.yaml ibkr.connect_retries) absorb that window.
-#   * data/ is bind-mounted so xsec_books.db + logs survive rebuilds and can be
-#     copied off the VM for analysis at summer's end.
-#   * The engine reaches the gateway at host "ib-gateway", set below via the
-#     IBKR_HOST env var, which xsec_engine.py reads in preference to xsec.yaml.
+# WHY EACH HARDENING BLOCK BELOW EXISTS
+#   logging limits   an always-on stack left unbounded will fill a 20 GB VM
+#                    disk with JSON logs in weeks, and a full disk stops the
+#                    engine writing the ledger — silent data loss.
+#   healthchecks     "container running" is not "gateway logged in". Without a
+#                    real check, the engine starts dialling a socket that will
+#                    not accept for another 90s and burns its retries.
+#   init: true       PID 1 in a container does not reap children by default;
+#                    the engine spawns job subprocesses on every schedule tick.
+#   stop_grace       give the engine time to finish a rebalance rather than
+#                    killing it mid-order.
 
 services:
   ib-gateway:
     image: ghcr.io/gnzsnz/ib-gateway:stable
     restart: unless-stopped
+    env_file: .env                       # TWS_USERID / TWS_PASSWORD
     environment:
-      TWS_USERID: ${TWS_USERID}          # IBKR paper username (from .env)
-      TWS_PASSWORD: ${TWS_PASSWORD}      # IBKR paper password (from .env)
+      TWS_USERID: ${TWS_USERID:?set TWS_USERID in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD:?set TWS_PASSWORD in .env}
       TRADING_MODE: paper                # NEVER change on this stack
       READ_ONLY_API: "no"                # we place (paper) orders
       TWOFA_TIMEOUT_ACTION: restart
+      TZ: America/New_York
     ports:
-      - "127.0.0.1:4002:4002"           # localhost only — not exposed publicly
+      - "127.0.0.1:4002:4002"            # localhost only — not public
+    healthcheck:
+      # The API port only accepts once IBC has completed login. This is the
+      # difference between "container up" and "actually usable".
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/4002' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 180s                 # cold login can take ~2 min
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
 
   engine:
     build: .
     restart: unless-stopped
+    init: true
     depends_on:
-      - ib-gateway
-    # EXPLICIT, not inherited from the image's CMD. The repo contains TWO
-    # schedulers — scripts/scheduler.py drives the retired natural-gas book and
-    # scripts/xsec_scheduler.py drives the live cross-sectional one. Naming the
-    # command here means you can see which strategy this stack runs without
-    # opening the Dockerfile.
+      ib-gateway:
+        condition: service_healthy       # wait for a real login, not just boot
+    # EXPLICIT, not inherited from the image CMD. The repo contains TWO
+    # schedulers — scripts/scheduler.py drives the RETIRED natural-gas book and
+    # scripts/xsec_scheduler.py drives the live cross-sectional one. Naming it
+    # here means you can see which strategy this stack runs without opening
+    # the Dockerfile.
     command: python -u scripts/xsec_scheduler.py
     environment:
-      # Engine must dial the gateway CONTAINER, not localhost. xsec_engine.py
-      # reads both of these and they override config/xsec.yaml's ibkr block.
+      # Engine dials the gateway CONTAINER, not localhost. xsec_engine.py reads
+      # both of these in preference to config/xsec.yaml's ibkr block.
       IBKR_HOST: ib-gateway
       IBKR_PORT: "4002"
-      TZ: America/New_York               # scheduler logs in ET for sanity
+      TZ: America/New_York               # scheduler compares against ET
+      PYTHONUNBUFFERED: "1"
       # NOTE: no EIA/NOAA/FRED/R2 keys. The cross-sectional strategy takes its
       # signals from IBKR itself (both legs of the term structure plus a year
-      # of bars) — see the comment in xsec_engine.run_rebalance. The R2 mirror
-      # was measured stale by 43-243 days per market and cannot drive live
-      # decisions, so this stack has no external data dependency at all.
+      # of bars). The R2 mirror was measured stale by 43-243 days per market,
+      # so this stack has NO external data dependency at all.
     volumes:
       - ./data:/app/data                 # ledger + logs persist on the host
       - ./config:/app/config             # edit schedule/params without rebuild
+    stop_grace_period: 60s               # never kill mid-rebalance
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
 
   dashboard:
     build: .
     restart: unless-stopped
+    init: true
     # xsec_live.py reads the LIVE ledger (data/live/xsec_books.db).
-    # Do not point this at dashboard/pivot_a.py — that one renders BACKTEST
-    # CSVs, and a page that shows simulated results under a "live" heading is
-    # worse than no page.
+    # Do NOT point this at dashboard/pivot_a.py — that renders BACKTEST CSVs,
+    # and a page showing simulated results under a "live" heading is worse
+    # than no page at all.
     command: >
       streamlit run dashboard/xsec_live.py
       --server.port 8501 --server.address 0.0.0.0
-      --server.headless true --browser.gatherUsageStats false
-    depends_on:
-      - engine
+      --server.headless true
+      --browser.gatherUsageStats false
+      --server.fileWatcherType none
+    environment:
+      TZ: America/New_York
     ports:
       # BOUND TO LOCALHOST. The dashboard has no authentication, so it must not
-      # be reachable from the public internet — reach it with an SSH tunnel
-      # (see docs/DEPLOY.md §5). Changing this to "8501:8501" publishes your
-      # full trading record to anyone who scans the VM's IP.
+      # be reachable from the public internet — reach it over an SSH tunnel
+      # (docs/DEPLOY.md §5). Changing this to "8501:8501" publishes your full
+      # trading record to anyone who port-scans the VM.
       - "127.0.0.1:8501:8501"
     volumes:
-      - ./data:/app/data                 # read-only consumer of xsec_books.db
+      - ./data:/app/data                 # read-only consumer of the ledger
       - ./config:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=4).status==200 else 1)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

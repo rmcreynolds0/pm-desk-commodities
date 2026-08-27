@@ -2,37 +2,38 @@
 dashboard/xsec_live.py — LIVE portfolio dashboard for the Pivot A agent ladder.
 ==============================================================================
 
-This is the live counterpart to dashboard/pivot_a.py:
+The live counterpart to dashboard/pivot_a.py:
 
-    pivot_a.py   RESEARCH  — reads backtest CSVs in data/processed/
-    xsec_live.py LIVE      — reads the paper ledger data/live/xsec_books.db
+    pivot_a.py    RESEARCH — reads backtest CSVs in data/processed/
+    xsec_live.py  LIVE     — reads the paper ledger data/live/xsec_books.db
 
-WHY A SEPARATE FILE RATHER THAN A FLAG ON pivot_a.py
+WHY TWO FILES RATHER THAN ONE WITH A TOGGLE
     A dashboard that silently falls back from live data to backtest data is
-    dangerous: you cannot tell by looking whether the equity curve on screen
-    is a real forward record or a simulation. Keeping them as two pages means
-    the URL you are on tells you which one you are reading.
+    dangerous: you cannot tell by looking whether the equity curve on screen is
+    a real forward record or a simulation. Two pages means the URL you are on
+    tells you which one you are reading.
 
-WHAT IT SHOWS, and why each panel exists
-    Ladder        Equity of all four agents on one axis. This is the whole
-                  point of the project: agent_0 is a random null and each rung
-                  adds exactly one factor, so the VERTICAL GAPS between the
-                  curves are the live estimate of what each factor contributes.
-    Positions     What each agent holds right now, with live unrealised P&L.
-    Decisions     Every decision the engine made, INCLUDING the ones it chose
-                  not to trade and the reason. An untraded decision (e.g.
-                  "rounds to 0 contracts") is a data point about capital
-                  adequacy, not a blank to be hidden.
-    Trades        Completed round trips.
+LAYOUT — ordered by the questions you actually ask, most urgent first:
 
-READ-ONLY. This page never writes to the ledger. The engine is the only
-writer; a dashboard that can mutate the trading record is a liability.
+    0  STATUS      Is it alive, has it launched, is anything wrong?
+    1  LADDER      Are the rungs in order? This is the pre-committed research
+                   question the whole project exists to answer.
+    2  AGENTS      Per-agent equity, return, exposure.
+    3  POSITIONS   What is held right now.
+    4  DECISIONS   Every decision INCLUDING untraded ones and the reason.
+    5  TRADES      Completed round trips.
+
+READ-ONLY. The engine is the sole writer. The ledger is opened with
+`mode=ro` so this page cannot take a write lock even if a future edit
+introduces a stray INSERT.
 
 Run locally:
     streamlit run dashboard/xsec_live.py --server.port 8501
 """
 from __future__ import annotations
 
+import datetime as dt
+import os
 import sqlite3
 from pathlib import Path
 
@@ -43,22 +44,27 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Agent display order and colour. Fixed rather than derived so the ladder
-# always reads bottom-to-top in information order, and so a given agent keeps
-# its colour across every chart on the page.
+# Fixed agent order and colour. Fixed rather than derived so the ladder always
+# reads in information order, and so an agent keeps its colour on every chart.
+# The ramp climbs from neutral grey (the null, deliberately muted) into the
+# accent hue — the ramp itself encodes "each rung adds one factor".
 AGENT_ORDER = ["agent_0", "agent_1", "agent_2", "agent_3"]
 AGENT_COLOR = {
-    "agent_0": "#8b8b8b",   # grey — the null benchmark, deliberately muted
-    "agent_1": "#4c9be8",
-    "agent_2": "#f0a202",
-    "agent_3": "#2ecc71",   # green — the full signal
+    "agent_0": "#8E9A9D",
+    "agent_1": "#5FA3A0",
+    "agent_2": "#2F8F7C",
+    "agent_3": "#177A63",
 }
-AGENT_LABEL = {
-    "agent_0": "agent_0 · random (null)",
-    "agent_1": "agent_1 · + carry",
-    "agent_2": "agent_2 · + momentum",
-    "agent_3": "agent_3 · + basis-momentum",
+AGENT_ADDS = {
+    "agent_0": "random — sees nothing",
+    "agent_1": "+ carry",
+    "agent_2": "+ momentum",
+    "agent_3": "+ basis-momentum",
 }
+
+# Semantic colours, kept separate from the agent ramp so "good/bad" never
+# collides with "which agent".
+OK_C, WARN_C, BAD_C = "#177A63", "#B7791F", "#A6462E"
 
 
 # ---------------------------------------------------------------------------
@@ -66,29 +72,19 @@ AGENT_LABEL = {
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def load_config() -> dict:
-    """Read the frozen spec. Cached for 60s so an edit shows up without a
-    restart, but we are not re-parsing YAML on every widget interaction."""
     with open(ROOT / "config" / "xsec.yaml") as f:
         return yaml.safe_load(f)
 
 
-def db_path(cfg: dict) -> Path:
-    return ROOT / cfg["paths"]["books_db"]
-
-
 @st.cache_data(ttl=30)
 def read_table(path_str: str, query: str) -> pd.DataFrame:
-    """Run a read-only query against the ledger.
+    """Read-only query against the ledger.
 
-    OPENED read-only VIA URI. The engine is a concurrent writer using WAL, so
-    the dashboard must not take a write lock — `mode=ro` guarantees that even
-    if a future edit to this file introduces a stray INSERT.
+    Cached 30s: the ledger changes at the daily mark and monthly rebalance
+    only, so re-reading on every widget interaction buys nothing.
 
-    Cached for 30s: the ledger only changes at the daily mark and the monthly
-    rebalance, so hammering it on every rerun buys nothing.
-
-    Returns an EMPTY DataFrame if the ledger does not exist yet, which is the
-    normal state before the first rebalance rather than an error.
+    Returns an EMPTY frame when the ledger or table does not exist — that is
+    the normal pre-launch state, not an error, and is presented as such.
     """
     p = Path(path_str)
     if not p.exists():
@@ -100,248 +96,386 @@ def read_table(path_str: str, query: str) -> pd.DataFrame:
         finally:
             con.close()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        # Table missing => the engine has not created it yet. Same meaning as
-        # "no data", so present it that way instead of a stack trace.
         return pd.DataFrame()
 
 
-def fmt_money(x: float) -> str:
-    return f"${x:,.0f}"
+def money(x) -> str:
+    return "—" if pd.isna(x) else f"${x:,.0f}"
+
+
+def chip(label: str, tone: str = "neutral") -> str:
+    """A small status pill. State is encoded in colour AND text, never colour
+    alone — the page has to survive being read by someone colour-blind and by
+    someone printing it in greyscale."""
+    tones = {
+        "ok":      (OK_C, "rgba(23,122,99,.13)"),
+        "warn":    (WARN_C, "rgba(183,121,31,.15)"),
+        "bad":     (BAD_C, "rgba(166,70,46,.14)"),
+        "neutral": ("#7C8A8D", "rgba(124,138,141,.14)"),
+    }
+    fg, bg = tones.get(tone, tones["neutral"])
+    return (f"<span style='background:{bg};color:{fg};padding:.2rem .6rem;"
+            f"border-radius:3px;font-size:.78rem;font-weight:600;"
+            f"letter-spacing:.02em;white-space:nowrap'>{label}</span>")
 
 
 # ---------------------------------------------------------------------------
-# PAGE
+# PAGE SETUP
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Pivot A — Live Agent Ladder",
+st.set_page_config(page_title="Pivot A — Live Ladder",
                    page_icon="📈", layout="wide")
 
+st.markdown("""
+<style>
+  .block-container {padding-top: 2.2rem; max-width: 1500px;}
+  /* Tabular figures everywhere numbers line up in columns. */
+  [data-testid="stMetricValue"] {font-variant-numeric: tabular-nums;
+                                 font-size: 1.55rem;}
+  [data-testid="stMetricLabel"] {font-size: .78rem; letter-spacing: .04em;}
+  /* Section rules that read as structure rather than decoration. */
+  h3 {margin-top: .4rem !important;}
+  .sect {border-top: 1px solid rgba(128,128,128,.25);
+         margin: 2.2rem 0 1.1rem; padding-top: 1.1rem;}
+  .sect-n {font-size: .72rem; letter-spacing: .14em; text-transform: uppercase;
+           opacity: .55; margin-bottom: .15rem;}
+  .sect-h {font-size: 1.32rem; font-weight: 700; line-height: 1.2;}
+  .sect-s {font-size: .88rem; opacity: .7; margin-top: .3rem; max-width: 82ch;}
+  /* Captions default to full container width, which at 1500px is far past a
+     readable measure. Constrain them the same way body prose is constrained. */
+  [data-testid="stCaptionContainer"] {max-width: 86ch;}
+  .agentcard {border: 1px solid rgba(128,128,128,.25); border-radius: 4px;
+              padding: .85rem .95rem; height: 100%;}
+  .agentcard .nm {font-weight: 700; font-size: .95rem;}
+  .agentcard .ad {font-size: .76rem; opacity: .65; margin-bottom: .5rem;}
+  .agentcard .eq {font-size: 1.4rem; font-weight: 700;
+                  font-variant-numeric: tabular-nums; line-height: 1.15;}
+  .agentcard .sub {font-size: .76rem; opacity: .7; margin-top: .2rem;}
+</style>
+""", unsafe_allow_html=True)
+
+
+def section(n: str, head: str, sub: str = "") -> None:
+    st.markdown(
+        f"<div class='sect'><div class='sect-n'>{n}</div>"
+        f"<div class='sect-h'>{head}</div>"
+        + (f"<div class='sect-s'>{sub}</div>" if sub else "")
+        + "</div>", unsafe_allow_html=True)
+
+
 cfg = load_config()
-DB = db_path(cfg)
-DBS = str(DB)
+# Path override exists so the page can be pointed at a BACKUP SNAPSHOT for
+# post-hoc analysis, and so it can be tested against a seeded fixture without
+# touching the live ledger. Defaults to the configured live path.
+DBS = os.environ.get("XSEC_DB", str(ROOT / cfg["paths"]["books_db"]))
+DB_EXISTS = Path(DBS).exists()
 
-st.title("Pivot A — Live Agent Ladder")
-st.caption(
-    "Cross-sectional commodity futures · IBKR **paper** · four agents sharing "
-    "one account, separated by `orderRef` tag and the local ledger."
-)
-
-# --- LIVE-OR-NOT BANNER ----------------------------------------------------
-# The single most important thing this page communicates is whether there is a
-# real forward record yet. Showing an empty chart without saying why is how a
-# reader concludes "the strategy lost money" when in fact it never traded.
 marks = read_table(DBS, "SELECT * FROM marks ORDER BY date")
 positions = read_table(DBS, "SELECT * FROM positions")
+agents_tbl = read_table(DBS, "SELECT name, capital FROM agents")
+decisions = read_table(
+    DBS, "SELECT * FROM decisions ORDER BY rebal_date DESC, agent, rank")
+trades = read_table(DBS, "SELECT * FROM trades ORDER BY exit_date DESC")
 
-if not DB.exists():
-    st.error(
-        f"**No ledger yet** — `{cfg['paths']['books_db']}` does not exist. "
-        "The engine creates it on its first run. Nothing has traded."
-    )
+CAPITAL = (dict(zip(agents_tbl["name"], agents_tbl["capital"]))
+           if not agents_tbl.empty else {})
+
+# ---------------------------------------------------------------------------
+# 0 · STATUS
+# ---------------------------------------------------------------------------
+st.markdown("## Pivot A — Live Agent Ladder")
+st.caption(
+    "Cross-sectional commodity futures · IBKR **paper** · four agents sharing "
+    "one account, separated by `orderRef` tag and this ledger."
+)
+
+# Work out the single most important fact: what state is the system in?
+if not DB_EXISTS:
+    state_chip, state_msg = chip("NOT STARTED", "bad"), (
+        f"`{cfg['paths']['books_db']}` does not exist. The engine creates it on "
+        "its first run. Nothing has traded.")
+elif agents_tbl.empty:
+    state_chip, state_msg = chip("NOT LAUNCHED", "warn"), (
+        "Ledger exists but no agents are registered — the first rebalance has "
+        "not run. The scheduler retries every weekday at "
+        f"{cfg['schedule']['rebalance_time']} ET while the book is empty.")
+elif positions.empty and marks.empty:
+    state_chip, state_msg = chip("REGISTERED, FLAT", "warn"), (
+        "Agents exist but hold nothing and no marks are recorded yet.")
 elif marks.empty:
-    st.warning(
-        "**Ledger exists but is empty** — the engine has not recorded a mark "
-        "yet. Expected before the first rebalance."
-    )
+    state_chip, state_msg = chip("HOLDING, UNMARKED", "warn"), (
+        "Positions are open but no daily mark has been written yet. The mark "
+        f"job runs weekdays at {cfg['schedule']['mark_time']} ET.")
 else:
-    span = f"{marks['date'].min()} → {marks['date'].max()}"
-    st.success(f"**Live record:** {marks['date'].nunique()} marked days  ·  {span}")
+    last = marks["date"].max()
+    age = None
+    try:
+        age = (dt.date.today() - dt.date.fromisoformat(str(last)[:10])).days
+    except ValueError:
+        pass
+    if age is not None and age > 4:
+        state_chip, state_msg = chip("STALE", "bad"), (
+            f"Last mark was **{last}**, {age} days ago. The mark job may have "
+            "stopped — check `docker compose logs engine`.")
+    else:
+        state_chip, state_msg = chip("LIVE", "ok"), (
+            f"{marks['date'].nunique()} marked days · "
+            f"{marks['date'].min()} → {marks['date'].max()}")
 
-# --- HEADLINE NUMBERS ------------------------------------------------------
-if not marks.empty:
+c1, c2 = st.columns([1, 5])
+c1.markdown(state_chip, unsafe_allow_html=True)
+c2.markdown(state_msg)
+
+# Capital-adequacy banner. This is the live deployment blocker, so it gets
+# surfaced at the top rather than buried in the decision table.
+if not decisions.empty:
+    latest_rb = decisions["rebal_date"].max()
+    d0 = decisions[decisions["rebal_date"] == latest_rb]
+    wanted = d0[d0["target_weight"].fillna(0) != 0]
+    zeroed = wanted[wanted["actual_contracts"] == 0]
+    if len(wanted):
+        pct = len(zeroed) / len(wanted) * 100
+        if pct > 30:
+            st.error(
+                f"**Under-capitalised.** {len(zeroed)} of {len(wanted)} intended "
+                f"positions ({pct:.0f}%) rounded to zero contracts on {latest_rb}. "
+                "The engine aborts above 30% — it refuses to run a smaller, "
+                "different strategy than the one backtested. Raise the paper "
+                "balance rather than narrowing the universe.")
+        elif pct > 10:
+            st.warning(
+                f"{len(zeroed)} of {len(wanted)} intended positions ({pct:.0f}%) "
+                f"rounded to zero on {latest_rb}. Below the 30% abort threshold, "
+                "but weights are drifting from target.")
+
+# Name the ledger ACTUALLY being read, not the configured one. When XSEC_DB
+# points elsewhere — a backup snapshot, a test fixture — a page that still
+# claims to show the live ledger is lying about its own provenance, which is
+# the same class of mistake as a dashboard that silently falls back to
+# backtest data.
+_overridden = "XSEC_DB" in os.environ
+_shown = "/".join(Path(DBS).parts[-2:])      # keep it short; full path is noise
+st.caption(
+    f"Read {dt.datetime.now():%Y-%m-%d %H:%M:%S} · ledger `{_shown}`"
+    + (" · **⚠ XSEC_DB override — this is NOT the live ledger**"
+       if _overridden else "")
+    + " · read-only view")
+
+# ---------------------------------------------------------------------------
+# 1 · THE LADDER
+# ---------------------------------------------------------------------------
+section("Section 1", "The ladder",
+        "Each agent sees exactly one more factor than the one below it, so the "
+        "vertical gap between two curves is the live contribution of that one "
+        "factor. agent_0 is random — the null the others must beat to be "
+        "interesting.")
+
+if marks.empty:
+    st.info("No marks recorded yet. The ladder appears after the first mark.")
+else:
+    # --- the pre-committed question, answered explicitly ---
     latest_date = marks["date"].max()
     latest = marks[marks["date"] == latest_date].set_index("agent")
 
-    cols = st.columns(len(AGENT_ORDER))
-    for col, agent in zip(cols, AGENT_ORDER):
-        if agent not in latest.index:
-            col.metric(AGENT_LABEL[agent], "—", "no data")
-            continue
-        row = latest.loc[agent]
-        # Return is measured against the agent's STARTING capital, not against
-        # the account's NetLiq — four books share one account, so account-level
-        # equity is a blend and is useless for per-agent attribution.
-        cap = read_table(DBS, f"SELECT capital FROM agents WHERE name='{agent}'")
-        start = float(cap.iloc[0, 0]) if not cap.empty else float("nan")
-        ret = (row["equity"] / start - 1.0) * 100 if start else float("nan")
-        col.metric(
-            AGENT_LABEL[agent],
-            fmt_money(row["equity"]),
-            f"{ret:+.2f}%" if pd.notna(ret) else "—",
-        )
+    idx_now = {}
+    for a in AGENT_ORDER:
+        s = marks[marks["agent"] == a].sort_values("date")
+        if not s.empty and s["equity"].iloc[0]:
+            idx_now[a] = s["equity"].iloc[-1] / s["equity"].iloc[0] * 100
 
-st.divider()
+    present = [a for a in AGENT_ORDER if a in idx_now]
+    pairs = list(zip(present, present[1:]))
+    in_order = sum(1 for lo, hi in pairs if idx_now[hi] >= idx_now[lo])
+    n_days = marks["date"].nunique()
 
-# ---------------------------------------------------------------------------
-# 1. THE LADDER
-# ---------------------------------------------------------------------------
-st.subheader("1 · The ladder — equity by agent")
-st.caption(
-    "Each agent sees exactly one more factor than the one below it. The gap "
-    "between adjacent curves is the live contribution of that factor. "
-    "agent_0 is random: it is the null the others must beat to be interesting."
-)
-
-if marks.empty:
-    st.info("No marks recorded yet — the ladder appears after the first mark.")
-else:
-    # Normalise each agent to 100 at its first mark. Absolute dollars are not
-    # comparable across agents if their books were ever sized differently;
-    # indexed curves always are, and the ladder is a relative claim.
-    fig = go.Figure()
-    for agent in AGENT_ORDER:
-        s = marks[marks["agent"] == agent].sort_values("date")
-        if s.empty:
-            continue
-        idx = s["equity"] / s["equity"].iloc[0] * 100.0
-        fig.add_trace(go.Scatter(
-            x=s["date"], y=idx, name=AGENT_LABEL[agent],
-            mode="lines",
-            line=dict(color=AGENT_COLOR[agent],
-                      width=3 if agent == "agent_3" else 2,
-                      dash="dot" if agent == "agent_0" else "solid"),
-        ))
-    # Reference line at 100 = flat. Without it the eye cannot tell profit from
-    # loss on an indexed axis.
-    fig.add_hline(y=100, line=dict(color="#888", width=1, dash="dash"))
-    fig.update_layout(
-        height=430, hovermode="x unified",
-        yaxis_title="equity (indexed, first mark = 100)",
-        xaxis_title=None, margin=dict(l=10, r=10, t=30, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander("Why the curves may look identical early on"):
+    lc, rc = st.columns([3, 1])
+    with rc:
+        st.markdown("**Rung order**")
+        tone = "ok" if pairs and in_order == len(pairs) else (
+            "warn" if in_order >= len(pairs) - 1 else "bad")
         st.markdown(
-            "Agents differ only in **which markets they pick**, not in sizing "
-            "or timing. Over a handful of days, four dollar-neutral commodity "
-            "books rebalanced monthly will move together because they share "
-            "the same market beta. The ladder needs **months**, not days, "
-            "before the gaps mean anything. Treat anything under ~30 marked "
-            "days as an infrastructure check, not a result."
+            chip(f"{in_order} of {len(pairs)} adjacent pairs in order", tone),
+            unsafe_allow_html=True)
+        st.caption(
+            "The forward test asks one pre-committed question: do the rungs "
+            "stay in order? "
+            + ("**Too early to mean anything** — this needs months, not "
+               f"{n_days} days." if n_days < 30 else
+               "Past 30 marked days this starts carrying signal."))
+
+    with lc:
+        fig = go.Figure()
+        for agent in AGENT_ORDER:
+            s = marks[marks["agent"] == agent].sort_values("date")
+            if s.empty:
+                continue
+            base = s["equity"].iloc[0]
+            if not base:
+                continue
+            fig.add_trace(go.Scatter(
+                x=s["date"], y=s["equity"] / base * 100.0,
+                name=f"{agent} · {AGENT_ADDS[agent]}",
+                mode="lines",
+                line=dict(color=AGENT_COLOR[agent],
+                          width=3 if agent == "agent_3" else 2,
+                          dash="dot" if agent == "agent_0" else "solid"),
+                hovertemplate="%{y:.2f}<extra>" + agent + "</extra>",
+            ))
+        # Without a reference line the eye cannot separate profit from loss
+        # on an indexed axis.
+        fig.add_hline(y=100, line=dict(color="rgba(128,128,128,.55)",
+                                       width=1, dash="dash"))
+        fig.update_layout(
+            height=400, hovermode="x unified",
+            yaxis_title="equity (first mark = 100)", xaxis_title=None,
+            margin=dict(l=8, r=8, t=28, b=8),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
+        fig.update_yaxes(gridcolor="rgba(128,128,128,.18)", zeroline=False)
+        fig.update_xaxes(gridcolor="rgba(128,128,128,.10)")
+        st.plotly_chart(fig, width="stretch")
 
-st.divider()
+    if n_days < 30:
+        st.caption(
+            "Agents differ only in **which markets they pick**, not in sizing "
+            "or timing. Over a few days four dollar-neutral books rebalanced "
+            "monthly move together because they share the same market beta. "
+            "Treat anything under ~30 marked days as an infrastructure check, "
+            "not a result.")
 
 # ---------------------------------------------------------------------------
-# 2. CURRENT POSITIONS
+# 2 · AGENTS
 # ---------------------------------------------------------------------------
-st.subheader("2 · Current positions")
+section("Section 2", "Agents",
+        "Return is measured against each agent's own starting capital. The "
+        "account's blended NetLiq is useless for attribution — four books "
+        "share one account and often hold opposite positions in the same "
+        "market that net to zero at account level while both carry real risk.")
+
+cols = st.columns(len(AGENT_ORDER))
+for col, agent in zip(cols, AGENT_ORDER):
+    with col:
+        start = CAPITAL.get(agent)
+        eq, ret_s, pos_s = None, "—", "—"
+        if not marks.empty:
+            s = marks[marks["agent"] == agent].sort_values("date")
+            if not s.empty:
+                eq = s["equity"].iloc[-1]
+        if eq is None and start is not None:
+            eq = start
+        if eq is not None and start:
+            ret_s = f"{(eq / start - 1) * 100:+.2f}%"
+        npos = int((positions["agent"] == agent).sum()) if not positions.empty else 0
+        ntr = int((trades["agent"] == agent).sum()) if not trades.empty else 0
+        pos_s = f"{npos} open · {ntr} closed"
+
+        st.markdown(
+            f"<div class='agentcard' style='border-left:3px solid "
+            f"{AGENT_COLOR[agent]}'>"
+            f"<div class='nm' style='color:{AGENT_COLOR[agent]}'>{agent}</div>"
+            f"<div class='ad'>{AGENT_ADDS[agent]}</div>"
+            f"<div class='eq'>{money(eq) if eq is not None else '—'}</div>"
+            f"<div class='sub'>{ret_s} vs start · {pos_s}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# 3 · POSITIONS
+# ---------------------------------------------------------------------------
+section("Section 3", "Current positions")
 
 if positions.empty:
     st.info("Flat — no open positions in the ledger.")
 else:
-    n_by_agent = positions.groupby("agent")["ticker"].count()
-    st.caption(
-        "Open positions per agent: "
-        + " · ".join(f"**{a}** {int(n_by_agent.get(a, 0))}" for a in AGENT_ORDER)
-    )
-    tabs = st.tabs([a for a in AGENT_ORDER])
+    p = positions.copy()
+    # Notional per lot divides by the magnifier: cents-quoted markets (grains,
+    # softs, cattle) would otherwise read 100x too large.
+    p["per_lot"] = p["entry_px"] * p["multiplier"] / p["magnifier"]
+    p["gross"] = p["per_lot"] * p["contracts"].abs()
+    p["side"] = p["contracts"].apply(lambda c: "LONG" if c > 0 else "SHORT")
+
+    tabs = st.tabs([f"{a}  ({int((positions['agent'] == a).sum())})"
+                    for a in AGENT_ORDER])
     for tab, agent in zip(tabs, AGENT_ORDER):
         with tab:
-            p = positions[positions["agent"] == agent].copy()
-            if p.empty:
+            q = p[p["agent"] == agent]
+            if q.empty:
                 st.write("Flat.")
                 continue
-            # Notional per contract divides by the magnifier: cents-quoted
-            # markets (grains, softs, cattle) would otherwise read 100x large.
-            p["notional_per_lot"] = (
-                p["entry_px"] * p["multiplier"] / p["magnifier"])
-            p["gross_notional"] = p["notional_per_lot"] * p["contracts"].abs()
-            p["side"] = p["contracts"].apply(lambda c: "LONG" if c > 0 else "SHORT")
-            show = p[["ticker", "side", "contracts", "entry_date", "entry_px",
-                      "local_symbol", "expiry", "gross_notional"]]
+            a, b, c = st.columns(3)
+            a.metric("Positions", f"{len(q)}")
+            b.metric("Gross notional", money(q["gross"].sum()))
+            net = (q["per_lot"] * q["contracts"]).sum()
+            c.metric("Net notional", money(net),
+                     help="Near zero is expected — the book is dollar-neutral.")
             st.dataframe(
-                show.sort_values("ticker"),
-                use_container_width=True, hide_index=True,
+                q[["ticker", "side", "contracts", "entry_date", "entry_px",
+                   "local_symbol", "expiry", "gross"]].sort_values("ticker"),
+                width="stretch", hide_index=True,
                 column_config={
-                    "gross_notional": st.column_config.NumberColumn(
+                    "gross": st.column_config.NumberColumn(
                         "gross notional", format="$%.0f"),
                     "entry_px": st.column_config.NumberColumn(format="%.4f"),
-                },
-            )
-            st.caption(f"Gross notional: **{fmt_money(p['gross_notional'].sum())}**")
-
-st.divider()
+                })
 
 # ---------------------------------------------------------------------------
-# 3. DECISIONS — INCLUDING THE UNTRADED ONES
+# 4 · DECISIONS
 # ---------------------------------------------------------------------------
-st.subheader("3 · Decision log")
-st.caption(
-    "Every decision, traded or not. Rows where `actual_contracts` is 0 but "
-    "`target_weight` is non-zero are positions the book wanted but could not "
-    "take — usually whole-lot rounding at the current account size. These are "
-    "recorded rather than hidden because they measure capital adequacy."
-)
-
-decisions = read_table(
-    DBS, "SELECT * FROM decisions ORDER BY rebal_date DESC, agent, rank")
+section("Section 4", "Decision log",
+        "Every decision, traded or not. Rows with a non-zero target weight but "
+        "zero actual contracts are positions the book wanted and could not "
+        "take — recorded rather than hidden, because they measure whether the "
+        "account is large enough to run the strategy as specified.")
 
 if decisions.empty:
     st.info("No decisions recorded yet.")
 else:
     rebals = sorted(decisions["rebal_date"].unique(), reverse=True)
-    pick = st.selectbox("Rebalance date", rebals, index=0)
-    d = decisions[decisions["rebal_date"] == pick]
+    left, right = st.columns([1, 3])
+    pick = left.selectbox("Rebalance", rebals, index=0)
+    only_traded = right.checkbox("Traded positions only", value=False)
 
-    # Surface the dropped-position count first — it is the number that tells
-    # you whether the account is big enough to run the strategy as designed.
-    wanted = d[d["target_weight"].fillna(0) != 0]
-    dropped = wanted[wanted["actual_contracts"] == 0]
-    if len(wanted):
-        pct = len(dropped) / len(wanted) * 100
-        (st.error if pct > 30 else st.info)(
-            f"**{len(dropped)} of {len(wanted)}** intended positions "
-            f"({pct:.0f}%) rounded to zero contracts on {pick}."
-            + ("  The engine aborts above 30% — the book is under-capitalised "
-               "for this universe." if pct > 30 else "")
-        )
+    d = decisions[decisions["rebal_date"] == pick]
+    if only_traded:
+        d = d[d["actual_contracts"] != 0]
 
     st.dataframe(
         d[["agent", "ticker", "rank", "score", "side", "target_weight",
            "target_contracts", "actual_contracts", "price", "reason"]],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         column_config={
             "score": st.column_config.NumberColumn(format="%.3f"),
             "target_weight": st.column_config.NumberColumn(format="%.4f"),
             "target_contracts": st.column_config.NumberColumn(format="%.2f"),
             "price": st.column_config.NumberColumn(format="%.4f"),
-        },
-    )
-
-st.divider()
+        })
 
 # ---------------------------------------------------------------------------
-# 4. COMPLETED TRADES
+# 5 · TRADES
 # ---------------------------------------------------------------------------
-st.subheader("4 · Completed round trips")
+section("Section 5", "Completed round trips")
 
-trades = read_table(DBS, "SELECT * FROM trades ORDER BY exit_date DESC")
 if trades.empty:
-    st.info("No completed round trips yet — positions are held between monthly "
-            "rebalances, so the first closes land at the next rebalance.")
+    st.info("None yet — positions are held between monthly rebalances, so the "
+            "first closes land at the next rebalance.")
 else:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Round trips", f"{len(trades):,}")
-    c2.metric("Realised P&L", fmt_money(trades["pnl"].sum()))
-    c3.metric("Win rate", f"{(trades['pnl'] > 0).mean() * 100:.0f}%")
+    a, b, c, d_ = st.columns(4)
+    a.metric("Round trips", f"{len(trades):,}")
+    b.metric("Realised P&L", money(trades["pnl"].sum()))
+    c.metric("Win rate", f"{(trades['pnl'] > 0).mean() * 100:.0f}%")
+    d_.metric("Avg P&L", money(trades["pnl"].mean()))
     st.dataframe(
         trades[["agent", "ticker", "contracts", "entry_date", "entry_px",
                 "exit_date", "exit_px", "exit_reason", "pnl"]],
-        use_container_width=True, hide_index=True,
-        column_config={"pnl": st.column_config.NumberColumn(format="$%.0f")},
-    )
+        width="stretch", hide_index=True,
+        column_config={"pnl": st.column_config.NumberColumn(format="$%.0f")})
 
 # ---------------------------------------------------------------------------
-# FOOTER — provenance
-# ---------------------------------------------------------------------------
-st.divider()
+st.markdown("<div class='sect'></div>", unsafe_allow_html=True)
 st.caption(
-    f"Ledger: `{cfg['paths']['books_db']}`  ·  "
-    f"universe: {len(cfg['universe'])} markets  ·  "
-    f"rebalance: {cfg['schedule']['rebalance_day']} "
-    f"{cfg['schedule']['rebalance_time']} {cfg['schedule']['timezone']}  ·  "
-    f"mark: {cfg['schedule']['mark_time']} daily.  "
-    "Read-only view; the engine is the sole writer."
+    f"Universe {len(cfg['universe'])} markets · rebalance "
+    f"{cfg['schedule']['rebalance_day']} {cfg['schedule']['rebalance_time']} "
+    f"{cfg['schedule']['timezone']} · mark {cfg['schedule']['mark_time']} "
+    f"weekdays · book ${cfg['capital']['book_size']:,.0f}/agent (config target; "
+    "the engine sizes down if the account cannot margin it). "
+    "Paper trading — no capital at risk."
 )
