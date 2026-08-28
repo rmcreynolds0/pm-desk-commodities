@@ -3,7 +3,8 @@
 run_xsec_live.py — CLI for the live cross-sectional book.
 
     python scripts/run_xsec_live.py --job rebalance --dry-run   # plan only
-    python scripts/run_xsec_live.py --job rebalance             # trade
+    python scripts/run_xsec_live.py --job rebalance             # trade all
+    python scripts/run_xsec_live.py --job rebalance --agents agent_0   # one rung
     python scripts/run_xsec_live.py --job mark                  # daily marks
     python scripts/run_xsec_live.py --job status                # ledger, no broker
 
@@ -51,6 +52,12 @@ def main() -> int:
                     required=True)
     ap.add_argument("--dry-run", action="store_true",
                     help="compute and record decisions, send no orders")
+    ap.add_argument("--agents", nargs="+", metavar="AGENT",
+                    help="restrict a rebalance to these agents, e.g. "
+                         "--agents agent_0. Lets one rung go live while the "
+                         "other paper accounts are still being opened, "
+                         "without touching the others' books. "
+                         "Default: every agent in the spec.")
     args = ap.parse_args()
 
     if args.job == "status":
@@ -60,7 +67,7 @@ def main() -> int:
     from storage_stress.execution import xsec_engine as E
     try:
         if args.job == "rebalance":
-            E.run_rebalance(ROOT, dry_run=args.dry_run)
+            E.run_rebalance(ROOT, dry_run=args.dry_run, agents=args.agents)
         else:
             E.run_mark(ROOT)
     except ConnectionError as e:

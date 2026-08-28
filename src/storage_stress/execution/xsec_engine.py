@@ -312,8 +312,15 @@ def agent_leverage(con, agent: str, cfg: dict) -> float:
 
 
 # --------------------------------------------------------------------------
-def run_rebalance(root: Path, dry_run: bool = False) -> None:
-    """MONTHLY. Compute targets, diff against holdings, trade the difference."""
+def run_rebalance(root: Path, dry_run: bool = False,
+                  agents: list[str] | None = None) -> None:
+    """MONTHLY. Compute targets, diff against holdings, trade the difference.
+
+    `agents` restricts the run to a subset. That exists so a rung can be
+    brought online on its own -- e.g. agent_0 trading while the other three
+    paper accounts are still being opened -- without touching the others'
+    books. None means every agent in the spec.
+    """
     cfg = load_config(root)
     con = open_ledger(root, cfg)
     today = dt.date.today()
@@ -322,14 +329,24 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
           f"{' (DRY RUN)' if dry_run else ''}")
 
     solo = per_agent_accounts(cfg)
-    agent_names = list(cfg["signal"]["agents"])
+    all_agents = list(cfg["signal"]["agents"])
+    if agents:
+        unknown = [a for a in agents if a not in all_agents]
+        if unknown:
+            raise ValueError(f"unknown agent(s) {unknown}; "
+                             f"spec defines {all_agents}")
+        agent_names = [a for a in all_agents if a in agents]   # keep spec order
+        print(f"  agents: {', '.join(agent_names)}  "
+              f"(SUBSET — {len(all_agents) - len(agent_names)} not run)")
+    else:
+        agent_names = all_agents
     print(f"  account mode: {'per-agent (one paper account each)' if solo else 'shared (all agents, one account)'}")
 
     # THE SIGNAL CONNECTION. Universe resolution and the factor panel are
     # identical for every agent -- agents differ only in which factor COLUMNS
     # they are allowed to read -- so both are computed once, here, and reused.
-    # In per-agent mode this borrows the first agent's gateway; any gateway
-    # returns the same market data.
+    # In per-agent mode this borrows the first RUNNING agent's gateway: the
+    # others' gateways may not exist yet when a subset is being launched.
     ib_exec = None          # per-agent connection, cleaned up in finally
     ib = connect_ib(cfg, agent_names[0] if solo else None)
     try:
@@ -367,7 +384,7 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
             "local_symbol": r["local_symbol"],
         } for _, r in ok.iterrows()}
 
-        for agent in cfg["signal"]["agents"]:
+        for agent in agent_names:
             factors = cfg["signal"]["agents"][agent]
             # Exclude markets missing any factor this rung needs, rather than
             # imputing a neutral value (which would rank them on nothing).

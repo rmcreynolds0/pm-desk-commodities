@@ -47,24 +47,36 @@ def load_cfg() -> dict:
         return yaml.safe_load(f)
 
 
-def ledger_is_empty(cfg: dict) -> bool:
-    """True when no agent holds any position.
+def agents_needing_launch(cfg: dict) -> list[str]:
+    """Agents that have never traded — the ones a self-healing launch targets.
 
-    Drives the self-healing launch: an empty book on a trading day means the
-    launch has not happened yet (or was missed), so it should be attempted
-    again rather than waiting for the next monthly window.
+    WHY PER AGENT, NOT PER LEDGER
+        The original check asked "is the ledger empty?" across ALL agents. With
+        one paper account per agent that is wrong: bringing agent_0 online
+        first (while the other three accounts are still being opened) makes the
+        ledger permanently non-empty, so the other three would never launch —
+        they would wait for the next month-end rebalance.
+
+    WHY `decisions` AND NOT `positions`
+        An agent that rebalanced but legitimately holds nothing still has
+        decision rows. Using positions would treat a genuinely flat agent as
+        never-launched and re-flatten it every day.
+
+    Returns [] when the ledger cannot be read: an unknown state must not
+    trigger a flatten-and-relaunch of a live book.
     """
     try:
         sys.path.insert(0, str(ROOT / "src"))
         from storage_stress.execution import xsec_books as B
         con = B.connect(ROOT / cfg["paths"]["books_db"])
-        n = con.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+        started = {r[0] for r in
+                   con.execute("SELECT DISTINCT agent FROM decisions")}
         con.close()
-        return n == 0
-    except Exception:                                # noqa: BLE001
-        # If we cannot read the ledger, do NOT claim it is empty — that would
-        # re-launch (and re-flatten) a live book on a transient error.
-        return False
+        return [a for a in cfg["signal"]["agents"] if a not in started]
+    except Exception as e:                           # noqa: BLE001
+        print(f"[xsec-scheduler] cannot read ledger ({e}); "
+              f"assuming nothing needs launching", file=sys.stderr)
+        return []
 
 
 def is_last_business_day(d: dt.date) -> bool:
@@ -119,14 +131,19 @@ def main() -> None:
             # zeros. A one-shot trigger that cannot recover is a bug.
             #
             # Now: once we are on or past `first_run_date`, ANY weekday at
-            # rebalance_time with an EMPTY book triggers the launch. Missing a
-            # day costs a day, not the whole experiment.
+            # rebalance_time launches whichever agents have NOT yet traded.
+            # Missing a day costs a day, not the whole experiment.
+            #
+            # PER AGENT, not per ledger. With one paper account per agent, the
+            # rungs come online as their accounts are opened -- agent_0 can be
+            # trading for days before agent_3's account exists. A whole-ledger
+            # check would see "not empty" and never launch the rest.
             first_run = sched.get("first_run_date")
             past_first = first_run and str(today) >= str(first_run)
             weekday = today.weekday() <= 4
-            book_empty = ledger_is_empty(cfg)
+            pending = agents_needing_launch(cfg) if (past_first and weekday) else []
 
-            needs_launch = past_first and weekday and book_empty
+            needs_launch = bool(pending)
             is_monthly = is_last_business_day(today)
 
             if ((needs_launch or is_monthly)
@@ -134,28 +151,32 @@ def main() -> None:
                     and fired.get("rebalance") != minute_key):
                 fired["rebalance"] = minute_key
 
-                # Start from a clean book on a launch: leftover positions from
-                # earlier testing would otherwise contaminate both the forward
-                # record and the margin calculation.
                 launch_ok = True
                 if needs_launch:
-                    # flatten_account.py exits non-zero if any account still
-                    # holds positions or a gateway was unreachable. Launching
-                    # anyway would inherit those positions into a book the
-                    # ledger believes is empty.
-                    rc = run_job(["scripts/flatten_account.py", "--confirm"],
+                    print(f"[xsec-scheduler] launching: {', '.join(pending)}")
+                    # Flatten ONLY the accounts being launched. A full sweep
+                    # would close the positions of agents already trading.
+                    # flatten exits non-zero if anything is left or a gateway
+                    # was unreachable; launching anyway would inherit positions
+                    # into a book the ledger believes is empty.
+                    rc = run_job(["scripts/flatten_account.py", "--confirm",
+                                  "--agents", *pending],
                                  "flatten", log_dir)
                     if rc != 0:
                         launch_ok = False
                         print("[xsec-scheduler] flatten did not fully clear "
-                              "the accounts — SKIPPING launch. Will retry at "
-                              "the next slot.", file=sys.stderr)
+                              f"{', '.join(pending)} — SKIPPING launch. Will "
+                              "retry at the next slot.", file=sys.stderr)
                     else:
                         time.sleep(45)  # let the closes settle before sizing
 
                 if launch_ok:
-                    run_job(["scripts/run_xsec_live.py", "--job", "rebalance"],
-                            "rebalance", log_dir)
+                    # A launch touches only the pending agents. The monthly
+                    # rebalance touches everyone.
+                    args = ["scripts/run_xsec_live.py", "--job", "rebalance"]
+                    if needs_launch and not is_monthly:
+                        args += ["--agents", *pending]
+                    run_job(args, "rebalance", log_dir)
 
             # ---- DAILY MARK -----------------------------------------------
             if (now.weekday() in [_DAYS[d] for d in sched["mark_days"]]

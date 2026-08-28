@@ -44,18 +44,36 @@ sys.path.insert(0, str(ROOT / "src"))
 MAX_LOTS = 60          # IBKR non-algo per-order cap
 
 
-def endpoints(cfg: dict) -> list[tuple[str, str, int]]:
-    """[(label, host, port)] — every account this stack trades.
+def endpoints(cfg: dict, only: list[str] | None = None
+              ) -> list[tuple[str, str, int]]:
+    """[(label, host, port)] — the accounts to flatten.
 
     Uses the engine's own resolver so the two cannot disagree about which
     gateway an agent lives on.
+
+    `only` restricts to specific agents. THIS MATTERS: in per-agent mode each
+    agent has its own account, so flattening everything in order to launch one
+    new rung would destroy the books of the agents already running. The
+    scheduler passes exactly the agents it is about to launch.
     """
     from storage_stress.execution import xsec_engine as E
 
     if not E.per_agent_accounts(cfg):
+        # One shared account: a partial flatten is not possible, since all
+        # agents' positions live together and are distinguished only by tag.
+        if only:
+            print("[note] shared-account mode — --agents cannot flatten a "
+                  "subset; all positions in the account will be closed.")
         host, port = E.endpoint_for(cfg, None)
         return [("shared", host, port)]
-    return [(a, *E.endpoint_for(cfg, a)) for a in cfg["signal"]["agents"]]
+
+    agents = list(cfg["signal"]["agents"])
+    if only:
+        unknown = [a for a in only if a not in agents]
+        if unknown:
+            raise SystemExit(f"unknown agent(s) {unknown}; spec defines {agents}")
+        agents = [a for a in agents if a in only]
+    return [(a, *E.endpoint_for(cfg, a)) for a in agents]
 
 
 def flatten_one(label: str, host: str, port: int, confirm: bool,
@@ -144,12 +162,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--confirm", action="store_true",
                     help="actually send the closing orders")
+    ap.add_argument("--agents", nargs="+", metavar="AGENT",
+                    help="flatten only these agents' accounts. Required when "
+                         "bringing a new rung online while others are already "
+                         "trading — a full sweep would close their positions "
+                         "too. Default: every account.")
     args = ap.parse_args()
 
     with open(ROOT / "config" / "xsec.yaml") as f:
         cfg = yaml.safe_load(f)
 
-    eps = endpoints(cfg)
+    eps = endpoints(cfg, args.agents)
     print(f"flattening {len(eps)} account(s)"
           f"{'' if args.confirm else '  (DRY RUN)'}")
 
