@@ -32,7 +32,15 @@ docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' 2>/dev/
 hdr "IB Gateways (one per agent)"
 UNHEALTHY=""
 for n in 0 1 2 3; do
-  CID=$(docker compose ps -q "ib-gateway-$n" 2>/dev/null)
+  # Distinguish "this agent's account has not been opened yet" from "its
+  # gateway is broken". During rollout the former is expected and fine; only
+  # the latter needs attention.
+  if ! grep -q "^TWS_USERID_$n=." .env 2>/dev/null; then
+    printf '  agent_%s  ib-gateway-%s  %s\n' "$n" "$n" \
+           "not configured (no login in .env)"
+    continue
+  fi
+  CID=$(docker compose --profile full ps -q "ib-gateway-$n" 2>/dev/null)
   if [ -z "$CID" ]; then
     printf '  agent_%s  ib-gateway-%s  %s\n' "$n" "$n" "NOT RUNNING"
     UNHEALTHY="$UNHEALTHY $n"

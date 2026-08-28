@@ -68,28 +68,41 @@ services:
       TWS_PASSWORD: ${TWS_PASSWORD_0:?set TWS_PASSWORD_0 in .env}
     ports: ["127.0.0.1:4002:4002"]
 
+  # GATEWAYS 1-3 ARE PROFILE-GATED.
+  # IBKR paper accounts take a day or two to open, so the stack must be able to
+  # run a subset. `docker compose up -d` brings up agent_0 only; adding the
+  # other logins to .env and running `docker compose --profile full up -d`
+  # brings up the rest without touching agent_0's running book.
+  #
+  # Defaults are `:-` (empty) rather than `:?` (required) because compose
+  # interpolates the WHOLE file even for services a profile excludes — `:?`
+  # would refuse to start the one-agent stack over credentials it is not
+  # going to use. deploy/bootstrap.sh validates what is actually needed.
   ib-gateway-1:
     <<: *gateway
+    profiles: ["full"]
     environment:
       <<: *gateway-env
-      TWS_USERID: ${TWS_USERID_1:?set TWS_USERID_1 in .env}
-      TWS_PASSWORD: ${TWS_PASSWORD_1:?set TWS_PASSWORD_1 in .env}
+      TWS_USERID: ${TWS_USERID_1:-}
+      TWS_PASSWORD: ${TWS_PASSWORD_1:-}
     ports: ["127.0.0.1:4012:4002"]
 
   ib-gateway-2:
     <<: *gateway
+    profiles: ["full"]
     environment:
       <<: *gateway-env
-      TWS_USERID: ${TWS_USERID_2:?set TWS_USERID_2 in .env}
-      TWS_PASSWORD: ${TWS_PASSWORD_2:?set TWS_PASSWORD_2 in .env}
+      TWS_USERID: ${TWS_USERID_2:-}
+      TWS_PASSWORD: ${TWS_PASSWORD_2:-}
     ports: ["127.0.0.1:4022:4002"]
 
   ib-gateway-3:
     <<: *gateway
+    profiles: ["full"]
     environment:
       <<: *gateway-env
-      TWS_USERID: ${TWS_USERID_3:?set TWS_USERID_3 in .env}
-      TWS_PASSWORD: ${TWS_PASSWORD_3:?set TWS_PASSWORD_3 in .env}
+      TWS_USERID: ${TWS_USERID_3:-}
+      TWS_PASSWORD: ${TWS_PASSWORD_3:-}
     ports: ["127.0.0.1:4032:4002"]
 
   engine:
@@ -97,13 +110,16 @@ services:
     restart: unless-stopped
     init: true
     depends_on:
-      # Wait for a REAL login on every gateway, not merely for the containers
-      # to start. A rebalance that finds one agent's gateway down would skip
-      # that agent and silently break the ladder comparison for that month.
+      # Only gateway-0, because 1-3 are profile-gated and compose cannot wait
+      # on a service its active profile excludes. Waiting for a REAL login
+      # here (not merely a started container) still matters: it is the
+      # difference between the engine dialling a live socket and burning its
+      # retries on one that will not accept for another 90 seconds.
+      #
+      # The later gateways need no depends_on: the engine connects per agent
+      # and SKIPS any agent whose gateway does not answer, so a rung that is
+      # not up yet costs that rung, not the run.
       ib-gateway-0: {condition: service_healthy}
-      ib-gateway-1: {condition: service_healthy}
-      ib-gateway-2: {condition: service_healthy}
-      ib-gateway-3: {condition: service_healthy}
     # EXPLICIT, not inherited from the image CMD. The repo contains TWO
     # schedulers — scripts/scheduler.py drives the RETIRED natural-gas book and
     # scripts/xsec_scheduler.py drives the live cross-sectional one.

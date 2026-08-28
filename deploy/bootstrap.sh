@@ -56,22 +56,18 @@ esac
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 DISK_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 say "resources: ${MEM_MB} MB RAM, ${DISK_GB} GB free disk"
-# FOUR gateways run here, one per agent, and each is a JVM wanting roughly
-# 700 MB-1 GB. Plus the engine and the dashboard. 4 GB is not enough.
-[ "$MEM_MB" -ge 3600 ] || die "need at least 4 GB RAM to run four gateways;
-     found ${MEM_MB} MB. 8 GB is the comfortable target — each agent has its
-     own IB Gateway (a JVM), and the OOM killer taking one out mid-session
-     looks exactly like a login failure."
+# Each agent's IB Gateway is a JVM wanting roughly 700 MB-1 GB, so the real
+# requirement depends on how many agents are configured -- which we do not
+# know until step 5. Enforce the ONE-agent floor here, and re-check against
+# the actual count once .env has been read.
+[ "$MEM_MB" -ge 1800 ] || die "need at least 2 GB RAM even for one gateway;
+     found ${MEM_MB} MB."
 [ "$DISK_GB" -ge 15 ] || die "need at least 15 GB free disk; found ${DISK_GB} GB"
-if [ "$MEM_MB" -lt 7600 ]; then
-  warn "${MEM_MB} MB RAM is below the 8 GB target for four gateways;"
-  warn "swap will cover the shortfall but logins may be slow"
-fi
 
-# Swap sized to the shortfall: enough that four JVMs plus the engine survive a
-# spike without the OOM killer taking a gateway down mid-session.
+# Swap regardless: it is what stops the OOM killer taking a gateway down
+# mid-session, and that failure looks exactly like a login failure in the logs.
 if [ "$MEM_MB" -lt 7600 ] && ! swapon --show | grep -q . ; then
-  say "adding a 4 GB swapfile (four gateways need the headroom)"
+  say "adding a 4 GB swapfile (headroom for the gateway JVMs)"
   fallocate -l 4G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=4096
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
@@ -113,42 +109,68 @@ fi
 if [ ! -f .env ]; then
   say "no .env found — creating one"
   echo
-  echo "  FOUR IBKR PAPER LOGINS are needed, one per agent."
+  echo "  The full stack uses FOUR IBKR paper logins, one per agent. IBKR"
+  echo "  takes a day or two to open each, so you can start with fewer and"
+  echo "  add the rest later — re-run this script when they arrive."
+  echo
   echo "  Each must be a PAPER-ONLY login: a headless gateway cannot answer"
   echo "  a phone 2FA prompt."
   echo
-  echo "  If you do not have four yet, stop now (Ctrl-C), register them at"
-  echo "  interactivebrokers.com, and re-run this script."
-  echo
+  read -r -p "  How many paper accounts do you have right now? [1-4]: " NACC
+  case "$NACC" in
+    1|2|3|4) ;;
+    *) die "enter a number from 1 to 4" ;;
+  esac
   umask 077
   : > .env
-  for i in 0 1 2 3; do
+  i=0
+  while [ "$i" -lt "$NACC" ]; do
     read -r -p "  agent_$i  paper username: " U
     read -r -s -p "  agent_$i  paper password: " P
     echo
     [ -n "$U" ] && [ -n "$P" ] || die "agent_$i: both values are required"
     printf 'TWS_USERID_%s=%s\nTWS_PASSWORD_%s=%s\n' "$i" "$U" "$i" "$P" >> .env
+    i=$((i + 1))
   done
   chmod 600 .env
-  ok ".env written with 4 logins, mode 600 (owner read only)"
+  ok ".env written with $NACC login(s), mode 600 (owner read only)"
 else
   chmod 600 .env
-  MISSING=""
-  for i in 0 1 2 3; do
-    grep -q "^TWS_USERID_$i="   .env || MISSING="$MISSING TWS_USERID_$i"
-    grep -q "^TWS_PASSWORD_$i=" .env || MISSING="$MISSING TWS_PASSWORD_$i"
-  done
-  [ -z "$MISSING" ] || die ".env is missing:$MISSING
-     This stack needs one paper login per agent. See .env.example.
-     Delete .env and re-run to be prompted for all four."
-  ok ".env present with all 4 agent logins"
+  grep -q '^TWS_USERID_0=' .env || die ".env exists but has no TWS_USERID_0.
+     agent_0's login is the minimum this stack needs. See .env.example."
+  ok ".env present"
+fi
+
+# How many agents can actually run? Gateways 1-3 are profile-gated, so the
+# stack starts whatever is configured and the engine skips the rest.
+CONFIGURED=0
+for i in 0 1 2 3; do
+  if grep -q "^TWS_USERID_$i=." .env && grep -q "^TWS_PASSWORD_$i=." .env; then
+    CONFIGURED=$((CONFIGURED + 1))
+  else
+    break                       # agents come online in order
+  fi
+done
+ok "$CONFIGURED of 4 agent login(s) configured"
+if [ "$CONFIGURED" -lt 4 ]; then
+  warn "agents $CONFIGURED-3 will not run until their logins are added."
+  warn "Add them to .env and re-run this script; agent_0's book is untouched."
+fi
+
+# NOW we know how many JVMs will start, so the memory requirement is real.
+# Roughly 1 GB per gateway plus ~1 GB for the engine and dashboard.
+NEED_MB=$(( CONFIGURED * 1000 + 1000 ))
+if [ "$MEM_MB" -lt "$NEED_MB" ]; then
+  warn "${MEM_MB} MB RAM for $CONFIGURED gateway(s) is tight (~${NEED_MB} MB"
+  warn "wanted). Swap will absorb it, but before adding the remaining agents"
+  warn "resize this VM to 8 GB or logins will start failing."
 fi
 
 # Refuse duplicate usernames. Two gateways logging into the SAME IBKR account
 # do not fail loudly -- IBKR disconnects the older session, so gateways fight
 # each other and agents intermittently cannot trade. Silent and very hard to
 # diagnose from the logs, so catch it here.
-DUPES=$(grep '^TWS_USERID_' .env | cut -d= -f2- | sort | uniq -d)
+DUPES=$(grep '^TWS_USERID_' .env | cut -d= -f2- | grep -v '^$' | sort | uniq -d)
 [ -z "$DUPES" ] || die "duplicate IBKR username(s) in .env: $DUPES
      Each agent needs its OWN paper account. Two gateways sharing a login
      will disconnect each other."
@@ -169,20 +191,27 @@ fi
 
 # --- 7. BUILD AND START ------------------------------------------------------
 mkdir -p data/live/logs data/processed data/raw data/interim
+# Gateways 1-3 are profile-gated so a partial rollout can run. Only ask for
+# the "full" profile once every login is present; otherwise compose would
+# start gateways with empty credentials that can never log in.
+COMPOSE_ARGS=""
+[ "$CONFIGURED" -eq 4 ] && COMPOSE_ARGS="--profile full"
+
 say "building images (the first build takes a few minutes)"
-docker compose build
-say "starting the stack"
-docker compose up -d
+docker compose $COMPOSE_ARGS build
+say "starting the stack ($CONFIGURED gateway(s) + engine + dashboard)"
+docker compose $COMPOSE_ARGS up -d
 
 # --- 8. WAIT FOR A REAL LOGIN ------------------------------------------------
 # "Container running" is not "logged in". Poll the compose healthcheck, which
 # tests whether the API port actually accepts a connection.
-say "waiting for all four IB Gateways to log in (up to 8 minutes)"
+say "waiting for $CONFIGURED IB Gateway(s) to log in (up to 8 minutes)"
+LAST=$((CONFIGURED - 1))
 for i in $(seq 1 96); do
   READY=0
   FAILED=""
-  for n in 0 1 2 3; do
-    CID=$(docker compose ps -q "ib-gateway-$n" 2>/dev/null)
+  for n in $(seq 0 $LAST); do
+    CID=$(docker compose $COMPOSE_ARGS ps -q "ib-gateway-$n" 2>/dev/null)
     if [ -z "$CID" ]; then
       FAILED="$FAILED ib-gateway-$n(missing)"
       continue
@@ -194,8 +223,8 @@ for i in $(seq 1 96); do
     esac
   done
 
-  if [ "$READY" -eq 4 ]; then
-    ok "all four gateways healthy — API ports accepting"
+  if [ "$READY" -eq "$CONFIGURED" ]; then
+    ok "$READY gateway(s) healthy — API port(s) accepting"
     break
   fi
   if [ -n "$FAILED" ]; then
@@ -204,10 +233,10 @@ for i in $(seq 1 96); do
      Inspect with:  docker compose logs ib-gateway-0 | tail -50"
   fi
   if [ "$i" -eq 96 ]; then
-    die "only $READY of 4 gateways became healthy within 8 minutes.
+    die "only $READY of $CONFIGURED gateway(s) became healthy within 8 minutes.
      Inspect each with:  docker compose logs ib-gateway-N | tail -50"
   fi
-  [ $((i % 12)) -eq 0 ] && say "  still waiting — $READY/4 healthy"
+  [ $((i % 12)) -eq 0 ] && say "  still waiting — $READY/$CONFIGURED healthy"
   sleep 5
 done
 
@@ -245,9 +274,20 @@ echo
 echo "       ssh -L 8501:localhost:8501 $(whoami)@<this-vm-ip>"
 echo "       then browse to http://localhost:8501"
 echo
-echo "  3. Nothing else. The scheduler launches itself at the next 10:30 ET"
-echo "     weekday slot while the book is empty, and marks every weekday at"
-echo "     16:30 ET. Your laptop can be off."
+echo "  3. Nothing else. The scheduler launches any agent that has not yet"
+echo "     traded, at the next 10:30 ET weekday slot, and marks every weekday"
+echo "     at 16:30 ET. Your laptop can be off."
+echo
+if [ "$CONFIGURED" -lt 4 ]; then
+echo "  ${BOLD}Adding the remaining agents later${OFF}"
+echo "     When the other paper accounts open, append their logins to .env:"
+echo "       TWS_USERID_1=... / TWS_PASSWORD_1=...   (and 2, 3)"
+echo "     then re-run this script, or directly:"
+echo "       docker compose --profile full up -d"
+echo "     The scheduler flattens and launches ONLY the new agents; the ones"
+echo "     already trading keep their positions and their record."
+echo
+fi
 echo
 echo "  Useful:"
 echo "       bash deploy/status.sh          one-screen health summary"

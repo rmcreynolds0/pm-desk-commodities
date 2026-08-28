@@ -410,7 +410,17 @@ def run_rebalance(root: Path, dry_run: bool = False,
                 if ib_exec is not None:
                     ib_exec.disconnect()
                     ib_exec = None
-                ib_exec = connect_ib(cfg, agent)
+                try:
+                    ib_exec = connect_ib(cfg, agent)
+                except ConnectionError as e:
+                    # A missing or broken gateway must cost ONE agent, not the
+                    # whole rebalance. Rungs come online as their paper
+                    # accounts are opened, so during rollout the later agents'
+                    # gateways legitimately do not exist yet -- and in steady
+                    # state one gateway failing should not stop the other three
+                    # from rebalancing.
+                    print(f"  {agent:<9} SKIPPED — {e}")
+                    continue
                 book = size_book(cfg, account_equity_usd(ib_exec), 1, agent)
             else:
                 book = shared_book
@@ -623,12 +633,23 @@ def run_mark(root: Path) -> None:
 
     # Marking needs PRICES ONLY — positions come from the local ledger, which
     # is the source of truth for per-agent attribution. Any gateway returns the
-    # same market data, so one connection serves all agents. In per-agent mode
-    # that must still be a real gateway: the shared 127.0.0.1 endpoint in the
-    # frozen spec does not resolve inside the compose network.
-    mark_agent = (list(cfg["signal"]["agents"])[0]
-                  if per_agent_accounts(cfg) else None)
-    ib = connect_ib(cfg, mark_agent)
+    # same market data, so we take the FIRST ONE THAT ANSWERS rather than a
+    # fixed choice: during rollout only some gateways exist, and in steady
+    # state one being down must not cost every agent its mark for the day.
+    if per_agent_accounts(cfg):
+        ib, last_err = None, None
+        for candidate in cfg["signal"]["agents"]:
+            try:
+                ib = connect_ib(cfg, candidate)
+                print(f"  pricing via {candidate}'s gateway")
+                break
+            except ConnectionError as e:                # noqa: PERF203
+                last_err = e
+        if ib is None:
+            raise ConnectionError(
+                f"no gateway reachable for marking: {last_err}")
+    else:
+        ib = connect_ib(cfg, None)
     try:
         res = UniverseResolver(ib, cfg["universe"])
         price_cache: dict[str, dict] = {}
