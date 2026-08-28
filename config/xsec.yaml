@@ -100,12 +100,22 @@ capital:
   # drift from target:
   #     $250k  -> only 11/22 markets tradeable, 31% avg weight error
   #     $2.5M  -> 22/22,  8.8% error
-  #     $10M   -> 22/22,  1.9% error   <-- chosen
+  #     $10M   -> 22/22,  1.9% error
   # Below ~$2.5M half the universe silently rounds to zero contracts, which
   # would quietly turn this into a different, smaller strategy than the one
-  # backtested. This is a paper account, so book size is a free parameter and
-  # is set to keep lot-size noise from contaminating the signal test.
-  book_size: 10000000
+  # backtested.
+  #
+  # SET TO $2M (2026-08-27, BEFORE the first live trade — this is the spec
+  # being fixed at launch, not a mid-test change).
+  #   $10M/agent would need $19.2M of paper equity. IBKR caps paper accounts
+  #   at $1,000,000, so that figure is unreachable and leaving it here would
+  #   only mean the engine silently sized down from a number this file claims.
+  #   With one $1M account per agent (see ibkr.account_mode) capacity is
+  #   $2,083,333/agent, so $2M is the largest round book the accounts actually
+  #   support. Measured outcome: 22/22 markets tradeable, ~9% average weight
+  #   error — worse than the $10M ideal, better than the $2.5M row above is
+  #   worth assuming, and critically it keeps every market in the universe.
+  book_size: 2000000
   # Refuse to open a position whose rounded size is 0 contracts. Silently
   # dropping small markets changes the strategy from the one backtested, so
   # the engine records the omission instead of hiding it.
@@ -130,6 +140,32 @@ ibkr:
   market_data_type: 4        # delayed-frozen: sufficient for a monthly rebalance
   connect_timeout_s: 20
   connect_retries: 3
+
+  # ACCOUNT TOPOLOGY
+  #   shared    — all four agents trade ONE paper account
+  #   per_agent — each agent trades its OWN paper account, via its own gateway
+  #
+  # WHY per_agent. IBKR caps a paper account at $1,000,000. Shared across four
+  # agents that yields (1e6 * 0.50) / (2 * 4 * 0.12) = $520,833 per agent, at
+  # which GC, HO, GF and HG round to zero contracts and drop out — four of the
+  # five markets whose removal was already tested and REJECTED (see §6 of
+  # docs/SUMMER_SUMMARY.md: carry stopped beating chance, drawdown −36% →
+  # −53%). The shared layout would silently recreate the rejected universe.
+  #
+  # One account per agent removes the n_agents divisor:
+  #   (1e6 * 0.50) / (2 * 1 * 0.12) = $2,083,333 per agent
+  # which holds all 22/22 markets at ~9% average weight error, WITHOUT
+  # relaxing the conservative 12% margin assumption.
+  account_mode: per_agent
+
+  # Each agent's gateway. Hostnames are the docker-compose service names; the
+  # engine reaches them on the compose network. Override per agent with
+  # IBKR_HOST_AGENT_0 / IBKR_PORT_AGENT_0 etc. for local testing.
+  gateways:
+    agent_0: {host: ib-gateway-0, port: 4002}
+    agent_1: {host: ib-gateway-1, port: 4002}
+    agent_2: {host: ib-gateway-2, port: 4002}
+    agent_3: {host: ib-gateway-3, port: 4002}
 
 # ---------------------------------------------------------------------------
 # SCHEDULE (US/Eastern)

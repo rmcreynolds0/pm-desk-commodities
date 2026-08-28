@@ -56,12 +56,23 @@ esac
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 DISK_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 say "resources: ${MEM_MB} MB RAM, ${DISK_GB} GB free disk"
-[ "$MEM_MB" -ge 1800 ] || die "need at least 2 GB RAM; found ${MEM_MB} MB"
-[ "$DISK_GB" -ge 10 ]  || die "need at least 10 GB free disk; found ${DISK_GB} GB"
+# FOUR gateways run here, one per agent, and each is a JVM wanting roughly
+# 700 MB-1 GB. Plus the engine and the dashboard. 4 GB is not enough.
+[ "$MEM_MB" -ge 3600 ] || die "need at least 4 GB RAM to run four gateways;
+     found ${MEM_MB} MB. 8 GB is the comfortable target — each agent has its
+     own IB Gateway (a JVM), and the OOM killer taking one out mid-session
+     looks exactly like a login failure."
+[ "$DISK_GB" -ge 15 ] || die "need at least 15 GB free disk; found ${DISK_GB} GB"
+if [ "$MEM_MB" -lt 7600 ]; then
+  warn "${MEM_MB} MB RAM is below the 8 GB target for four gateways;"
+  warn "swap will cover the shortfall but logins may be slow"
+fi
 
-if [ "$MEM_MB" -lt 3800 ] && ! swapon --show | grep -q . ; then
-  say "RAM under 4 GB and no swap — adding a 2 GB swapfile"
-  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+# Swap sized to the shortfall: enough that four JVMs plus the engine survive a
+# spike without the OOM killer taking a gateway down mid-session.
+if [ "$MEM_MB" -lt 7600 ] && ! swapon --show | grep -q . ; then
+  say "adding a 4 GB swapfile (four gateways need the headroom)"
+  fallocate -l 4G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=4096
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
   swapon /swapfile
@@ -96,30 +107,51 @@ if [ "$(id -u)" -ne 0 ] && ! groups | grep -qw docker ; then
   exit 0
 fi
 
-# --- 5. CREDENTIALS ----------------------------------------------------------
+# --- 5. CREDENTIALS — ONE PAPER LOGIN PER AGENT ------------------------------
+# Each agent trades its own $1M paper account, so four separate IBKR paper
+# usernames are required. See config/xsec.yaml ibkr.account_mode for why.
 if [ ! -f .env ]; then
   say "no .env found — creating one"
   echo
-  echo "  IBKR PAPER credentials. These must be a paper-only login:"
-  echo "  a headless IB Gateway CANNOT answer a phone 2FA prompt."
+  echo "  FOUR IBKR PAPER LOGINS are needed, one per agent."
+  echo "  Each must be a PAPER-ONLY login: a headless gateway cannot answer"
+  echo "  a phone 2FA prompt."
   echo
-  read -r -p "  TWS_USERID (paper username): " TWS_U
-  read -r -s -p "  TWS_PASSWORD (paper password): " TWS_P
+  echo "  If you do not have four yet, stop now (Ctrl-C), register them at"
+  echo "  interactivebrokers.com, and re-run this script."
   echo
-  [ -n "$TWS_U" ] && [ -n "$TWS_P" ] || die "both values are required"
   umask 077
-  {
-    printf 'TWS_USERID=%s\n' "$TWS_U"
-    printf 'TWS_PASSWORD=%s\n' "$TWS_P"
-  } > .env
+  : > .env
+  for i in 0 1 2 3; do
+    read -r -p "  agent_$i  paper username: " U
+    read -r -s -p "  agent_$i  paper password: " P
+    echo
+    [ -n "$U" ] && [ -n "$P" ] || die "agent_$i: both values are required"
+    printf 'TWS_USERID_%s=%s\nTWS_PASSWORD_%s=%s\n' "$i" "$U" "$i" "$P" >> .env
+  done
   chmod 600 .env
-  ok ".env written, mode 600 (owner read only)"
+  ok ".env written with 4 logins, mode 600 (owner read only)"
 else
   chmod 600 .env
-  grep -q '^TWS_USERID='   .env || die ".env exists but has no TWS_USERID"
-  grep -q '^TWS_PASSWORD=' .env || die ".env exists but has no TWS_PASSWORD"
-  ok ".env present and populated"
+  MISSING=""
+  for i in 0 1 2 3; do
+    grep -q "^TWS_USERID_$i="   .env || MISSING="$MISSING TWS_USERID_$i"
+    grep -q "^TWS_PASSWORD_$i=" .env || MISSING="$MISSING TWS_PASSWORD_$i"
+  done
+  [ -z "$MISSING" ] || die ".env is missing:$MISSING
+     This stack needs one paper login per agent. See .env.example.
+     Delete .env and re-run to be prompted for all four."
+  ok ".env present with all 4 agent logins"
 fi
+
+# Refuse duplicate usernames. Two gateways logging into the SAME IBKR account
+# do not fail loudly -- IBKR disconnects the older session, so gateways fight
+# each other and agents intermittently cannot trade. Silent and very hard to
+# diagnose from the logs, so catch it here.
+DUPES=$(grep '^TWS_USERID_' .env | cut -d= -f2- | sort | uniq -d)
+[ -z "$DUPES" ] || die "duplicate IBKR username(s) in .env: $DUPES
+     Each agent needs its OWN paper account. Two gateways sharing a login
+     will disconnect each other."
 
 # --- 6. FIREWALL -------------------------------------------------------------
 if command -v ufw >/dev/null 2>&1 ; then
@@ -145,22 +177,37 @@ docker compose up -d
 # --- 8. WAIT FOR A REAL LOGIN ------------------------------------------------
 # "Container running" is not "logged in". Poll the compose healthcheck, which
 # tests whether the API port actually accepts a connection.
-say "waiting for IB Gateway to log in (up to 5 minutes)"
-GW_CID=$(docker compose ps -q ib-gateway)
-for i in $(seq 1 60); do
-  STATE=$(docker inspect --format '{{.State.Health.Status}}' "$GW_CID" 2>/dev/null || echo starting)
-  if [ "$STATE" = "healthy" ]; then
-    ok "gateway healthy — API port accepting connections"
+say "waiting for all four IB Gateways to log in (up to 8 minutes)"
+for i in $(seq 1 96); do
+  READY=0
+  FAILED=""
+  for n in 0 1 2 3; do
+    CID=$(docker compose ps -q "ib-gateway-$n" 2>/dev/null)
+    if [ -z "$CID" ]; then
+      FAILED="$FAILED ib-gateway-$n(missing)"
+      continue
+    fi
+    STATE=$(docker inspect --format '{{.State.Health.Status}}' "$CID" 2>/dev/null || echo starting)
+    case "$STATE" in
+      healthy)   READY=$((READY + 1)) ;;
+      unhealthy) FAILED="$FAILED ib-gateway-$n" ;;
+    esac
+  done
+
+  if [ "$READY" -eq 4 ]; then
+    ok "all four gateways healthy — API ports accepting"
     break
   fi
-  if [ "$STATE" = "unhealthy" ]; then
-    die "gateway went unhealthy. This is almost always 2FA. Inspect with:
-     docker compose logs ib-gateway | tail -50"
+  if [ -n "$FAILED" ]; then
+    die "gateway(s) went unhealthy:$FAILED
+     Almost always 2FA, or the same username reused across two gateways.
+     Inspect with:  docker compose logs ib-gateway-0 | tail -50"
   fi
-  if [ "$i" -eq 60 ]; then
-    die "gateway did not become healthy within 5 minutes. Inspect with:
-     docker compose logs ib-gateway | tail -50"
+  if [ "$i" -eq 96 ]; then
+    die "only $READY of 4 gateways became healthy within 8 minutes.
+     Inspect each with:  docker compose logs ib-gateway-N | tail -50"
   fi
+  [ $((i % 12)) -eq 0 ] && say "  still waiting — $READY/4 healthy"
   sleep 5
 done
 

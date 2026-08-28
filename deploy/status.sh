@@ -26,20 +26,32 @@ hdr "Containers"
 docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' 2>/dev/null \
   || echo "  docker compose unavailable or stack not created"
 
-# --- gateway -----------------------------------------------------------------
-hdr "IB Gateway"
-GW=$(docker compose ps -q ib-gateway 2>/dev/null)
-if [ -n "$GW" ]; then
-  HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$GW" 2>/dev/null || echo unknown)
-  echo "  health: $HEALTH"
-  if [ "$HEALTH" != "healthy" ]; then
-    echo "  last log lines:"
-    docker compose logs --tail 12 ib-gateway 2>/dev/null | sed 's/^/    /'
-    echo "  (an unhealthy gateway is almost always a 2FA prompt the headless"
-    echo "   login cannot answer — see docs/DEPLOY.md section 0)"
+# --- gateways ----------------------------------------------------------------
+# One per agent: each trades its own $1M paper account, so a single gateway
+# being down silently removes that rung from the month's comparison.
+hdr "IB Gateways (one per agent)"
+UNHEALTHY=""
+for n in 0 1 2 3; do
+  CID=$(docker compose ps -q "ib-gateway-$n" 2>/dev/null)
+  if [ -z "$CID" ]; then
+    printf '  agent_%s  ib-gateway-%s  %s\n' "$n" "$n" "NOT RUNNING"
+    UNHEALTHY="$UNHEALTHY $n"
+    continue
   fi
-else
-  echo "  not running"
+  HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$CID" 2>/dev/null || echo unknown)
+  printf '  agent_%s  ib-gateway-%s  %s\n' "$n" "$n" "$HEALTH"
+  [ "$HEALTH" = "healthy" ] || UNHEALTHY="$UNHEALTHY $n"
+done
+if [ -n "$UNHEALTHY" ]; then
+  echo
+  echo "  Unhealthy:$UNHEALTHY"
+  echo "  Usual causes: a 2FA prompt the headless login cannot answer, or the"
+  echo "  same IBKR username reused on two gateways (they disconnect each"
+  echo "  other). See docs/DEPLOY.md section 0."
+  for n in $UNHEALTHY; do
+    echo "  --- ib-gateway-$n, last 8 lines ---"
+    docker compose logs --tail 8 "ib-gateway-$n" 2>/dev/null | sed 's/^/    /'
+  done
 fi
 
 # --- ledger ------------------------------------------------------------------

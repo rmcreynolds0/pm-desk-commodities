@@ -1,73 +1,125 @@
 # docker-compose.yml — always-on paper stack for the CROSS-SECTIONAL (Pivot A)
-# strategy, on one small VM. Runs with your laptop off.
+# strategy. Runs with your laptop off.
 #
-#   ib-gateway : headless IB Gateway (paper) with IBC auto-login/auto-restart
-#   engine     : scripts/xsec_scheduler.py -> rebalance (monthly, 10:30 ET)
-#                and mark (every weekday, 16:30 ET)
-#   dashboard  : Streamlit live ledger view, localhost:8501 on the VM
+#   ib-gateway-0..3 : ONE headless IB Gateway per agent, each logged into that
+#                     agent's OWN IBKR paper account
+#   engine          : scripts/xsec_scheduler.py -> rebalance (monthly, 10:30 ET)
+#                     and mark (every weekday, 16:30 ET)
+#   dashboard       : Streamlit live ledger view, localhost:8501 on the VM
 #
-# THE VM MUST BE x86-64 (amd64). IB Gateway has no ARM build, so Oracle's free
-# ARM tier and Raspberry Pi cannot run this stack at all. See docs/DEPLOY.md §1.
+# WHY FOUR GATEWAYS RATHER THAN ONE
+# ---------------------------------
+# IBKR caps a paper account at $1,000,000. Four agents sharing one account get
+# (1e6 * 0.50) / (2 * 4 * 0.12) = $520,833 each, at which gold, heating oil,
+# feeder cattle and copper round to zero contracts and drop out — four of the
+# five markets whose removal was already tested and REJECTED (carry stopped
+# beating chance). One account per agent removes the divisor entirely and
+# yields $2,083,333 each, holding all 22 markets.
 #
-# BRING-UP:  bash deploy/bootstrap.sh     (does everything below for you)
-# MANUAL:    cp .env.example .env && edit && docker compose up -d --build
+# A gateway is one login, so four accounts means four gateways.
 #
-# WHY EACH HARDENING BLOCK BELOW EXISTS
-#   logging limits   an always-on stack left unbounded will fill a 20 GB VM
-#                    disk with JSON logs in weeks, and a full disk stops the
-#                    engine writing the ledger — silent data loss.
+# THE VM MUST BE x86-64 (amd64) WITH >= 8 GB RAM. IB Gateway has no ARM build,
+# and each gateway is a JVM needing roughly 700 MB-1 GB. Four of them plus the
+# engine and dashboard will not fit in 4 GB. See docs/DEPLOY.md §1.
+#
+# BRING-UP:  bash deploy/bootstrap.sh     (prompts for all four logins)
+#
+# WHY EACH HARDENING BLOCK EXISTS
+#   logging limits   an always-on stack left unbounded fills a VM disk in
+#                    weeks; a full disk stops the engine writing the ledger.
 #   healthchecks     "container running" is not "gateway logged in". Without a
-#                    real check, the engine starts dialling a socket that will
-#                    not accept for another 90s and burns its retries.
-#   init: true       PID 1 in a container does not reap children by default;
-#                    the engine spawns job subprocesses on every schedule tick.
-#   stop_grace       give the engine time to finish a rebalance rather than
-#                    killing it mid-order.
+#                    real check the engine dials a socket that will not accept
+#                    for another 90s and burns its retries.
+#   init: true       PID 1 does not reap children; the engine spawns a job
+#                    subprocess on every schedule tick.
+#   stop_grace       let a rebalance finish rather than dying mid-order.
+
+# --- shared gateway definition; each agent's service overrides only its login
+x-gateway: &gateway
+  image: ghcr.io/gnzsnz/ib-gateway:stable
+  restart: unless-stopped
+  env_file: .env
+  healthcheck:
+    # The API port only accepts once IBC has completed login. This is the
+    # difference between "container up" and "actually usable".
+    test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/4002' || exit 1"]
+    interval: 30s
+    timeout: 5s
+    retries: 10
+    start_period: 240s          # four gateways logging in at once are slower
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-gateway-env: &gateway-env
+  TRADING_MODE: paper           # NEVER change on this stack
+  READ_ONLY_API: "no"           # we place (paper) orders
+  TWOFA_TIMEOUT_ACTION: restart
+  TZ: America/New_York
 
 services:
-  ib-gateway:
-    image: ghcr.io/gnzsnz/ib-gateway:stable
-    restart: unless-stopped
-    env_file: .env                       # TWS_USERID / TWS_PASSWORD
+  # Host ports are bound to 127.0.0.1 for debugging only; the engine reaches
+  # the gateways by service name on the compose network, not through these.
+  ib-gateway-0:
+    <<: *gateway
     environment:
-      TWS_USERID: ${TWS_USERID:?set TWS_USERID in .env}
-      TWS_PASSWORD: ${TWS_PASSWORD:?set TWS_PASSWORD in .env}
-      TRADING_MODE: paper                # NEVER change on this stack
-      READ_ONLY_API: "no"                # we place (paper) orders
-      TWOFA_TIMEOUT_ACTION: restart
-      TZ: America/New_York
-    ports:
-      - "127.0.0.1:4002:4002"            # localhost only — not public
-    healthcheck:
-      # The API port only accepts once IBC has completed login. This is the
-      # difference between "container up" and "actually usable".
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/4002' || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 10
-      start_period: 180s                 # cold login can take ~2 min
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
+      <<: *gateway-env
+      TWS_USERID: ${TWS_USERID_0:?set TWS_USERID_0 in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD_0:?set TWS_PASSWORD_0 in .env}
+    ports: ["127.0.0.1:4002:4002"]
+
+  ib-gateway-1:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      TWS_USERID: ${TWS_USERID_1:?set TWS_USERID_1 in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD_1:?set TWS_PASSWORD_1 in .env}
+    ports: ["127.0.0.1:4012:4002"]
+
+  ib-gateway-2:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      TWS_USERID: ${TWS_USERID_2:?set TWS_USERID_2 in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD_2:?set TWS_PASSWORD_2 in .env}
+    ports: ["127.0.0.1:4022:4002"]
+
+  ib-gateway-3:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      TWS_USERID: ${TWS_USERID_3:?set TWS_USERID_3 in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD_3:?set TWS_PASSWORD_3 in .env}
+    ports: ["127.0.0.1:4032:4002"]
 
   engine:
     build: .
     restart: unless-stopped
     init: true
     depends_on:
-      ib-gateway:
-        condition: service_healthy       # wait for a real login, not just boot
+      # Wait for a REAL login on every gateway, not merely for the containers
+      # to start. A rebalance that finds one agent's gateway down would skip
+      # that agent and silently break the ladder comparison for that month.
+      ib-gateway-0: {condition: service_healthy}
+      ib-gateway-1: {condition: service_healthy}
+      ib-gateway-2: {condition: service_healthy}
+      ib-gateway-3: {condition: service_healthy}
     # EXPLICIT, not inherited from the image CMD. The repo contains TWO
     # schedulers — scripts/scheduler.py drives the RETIRED natural-gas book and
-    # scripts/xsec_scheduler.py drives the live cross-sectional one. Naming it
-    # here means you can see which strategy this stack runs without opening
-    # the Dockerfile.
+    # scripts/xsec_scheduler.py drives the live cross-sectional one.
     command: python -u scripts/xsec_scheduler.py
     environment:
-      # Engine dials the gateway CONTAINER, not localhost. xsec_engine.py reads
-      # both of these in preference to config/xsec.yaml's ibkr block.
-      IBKR_HOST: ib-gateway
-      IBKR_PORT: "4002"
+      # Per-agent gateway endpoints. These override config/xsec.yaml's
+      # ibkr.gateways block, so the container topology is visible here rather
+      # than only in the frozen spec.
+      IBKR_HOST_AGENT_0: ib-gateway-0
+      IBKR_HOST_AGENT_1: ib-gateway-1
+      IBKR_HOST_AGENT_2: ib-gateway-2
+      IBKR_HOST_AGENT_3: ib-gateway-3
+      IBKR_PORT_AGENT_0: "4002"
+      IBKR_PORT_AGENT_1: "4002"
+      IBKR_PORT_AGENT_2: "4002"
+      IBKR_PORT_AGENT_3: "4002"
       TZ: America/New_York               # scheduler compares against ET
       PYTHONUNBUFFERED: "1"
       # NOTE: no EIA/NOAA/FRED/R2 keys. The cross-sectional strategy takes its

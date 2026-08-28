@@ -1,27 +1,64 @@
 # DEPLOY — Always-On Paper Stack on a Cloud VM
 
 Goal: the four agents trade and the dashboard stays live **24/5 with your
-laptop off**. Everything runs in three Docker containers on a small VM:
-`ib-gateway` (headless IBKR login), `engine` (the scheduler firing decide/mark),
-and `dashboard` (Streamlit). State lives in a bind-mounted `./data` volume.
+laptop off**. Everything runs in six Docker containers on one VM: FOUR
+`ib-gateway-N` (one headless IBKR login per agent), `engine` (the scheduler
+firing rebalance/mark), and `dashboard` (Streamlit). State lives in a
+bind-mounted `./data` volume.
 
 You run these steps on the VM; nothing here needs your laptop after setup.
 
 ---
 
-## 0. Prerequisites — a paper login that can log in headlessly
+## 0. Prerequisites — FOUR paper logins that work headlessly
+
+### Why four
+
+IBKR caps a paper account at **$1,000,000**. Four agents sharing one account
+get, after the margin buffer:
+
+```
+(1,000,000 × 0.50) / (2 × 4 × 0.12) = $520,833 per agent
+```
+
+At that book size **gold, heating oil, feeder cattle and copper round to zero
+contracts** and silently drop out — four of the five markets whose removal was
+already tested and **rejected** (§6 of `SUMMER_SUMMARY.md`: carry stopped
+beating chance, 0.24 → 0.12; drawdown −36% → −53%). The shared layout would
+recreate the exact universe we rejected, and the forward test could no longer
+distinguish "carry doesn't work" from "we couldn't trade the markets carry
+needs."
+
+Giving each agent its **own** $1M account removes the divisor:
+
+```
+(1,000,000 × 0.50) / (2 × 1 × 0.12) = $2,083,333 per agent
+```
+
+which holds **all 22 markets at ~9% average weight error**, without relaxing
+the conservative 12% margin assumption. One gateway is one login, so four
+accounts means four gateway containers.
+
+Register four separate IBKR paper usernames before going further.
+
+### The 2FA trap
 
 **This is the #1 thing that breaks a headless Gateway: two-factor auth.**
-IBKR's headless Gateway cannot complete a phone-app 2FA prompt. Options:
+IBKR's headless Gateway cannot complete a phone-app 2FA prompt.
 
-- **Best:** use a **paper-only** username/password. Paper accounts generally
-  do **not** enforce IB Key 2FA, so headless auto-login works.
-- If your paper login is tied to a live account with mandatory 2FA, headless
-  login will fail. Create/enable a standalone paper user, or use IBKR's
-  "second factor device sharing" — but the paper-only route is far simpler.
+- **Best:** use **paper-only** usernames. Paper accounts generally do **not**
+  enforce IB Key 2FA, so headless auto-login works.
+- A paper login tied to a live account with mandatory 2FA will fail headless.
 
-Confirm you can log into IB Gateway with the username/password **without** a
-phone prompt before going headless.
+Confirm each of the four logs into IB Gateway **without** a phone prompt before
+going headless.
+
+### Do not reuse a username
+
+Two gateways logging into the same IBKR account do not fail loudly — IBKR
+disconnects the older session, so the gateways fight each other and agents
+intermittently cannot trade. `deploy/bootstrap.sh` refuses duplicate usernames
+for this reason.
 
 ---
 
@@ -34,14 +71,17 @@ configured, so ARM options are listed below only to be ruled out.
 
 | Provider | Cost | Arch | Verdict |
 |----------|------|------|---------|
-| **Hetzner CX22** | ~€4/mo | x86-64 | **Recommended.** 2 vCPU / 4 GB. Cheapest host that actually runs the gateway. |
-| **DigitalOcean** | ~$6/mo | x86-64 | Works. 1 vCPU / 2 GB is the practical minimum. |
-| **x86 mini PC** (N100) | ~$150 once | x86-64 | Works. No recurring cost; needs mains power and a stable home network. |
+| **Hetzner CX32** | ~€8/mo | x86-64 | **Recommended.** 4 vCPU / 8 GB — enough for four gateways. |
+| Hetzner CX22 | ~€4/mo | x86-64 | 2 vCPU / 4 GB. Too small for four gateways; only viable in shared-account mode. |
+| **x86 mini PC** (N100, 16 GB) | ~$250 once | x86-64 | Works well. No recurring cost; needs mains power and a stable network. |
 | ~~Oracle Cloud Always Free~~ | $0 | **ARM Ampere** | **Will not work** — no ARM build of IB Gateway. The free tier is tempting and this is the trap. |
 | ~~Raspberry Pi~~ | ~$80 once | **ARM** | **Will not work** — same reason. |
 
-Specs to target: **2+ GB RAM, ~20 GB disk, Ubuntu 24.04 LTS**. 4 GB is
-comfortable. The stack idles low; the gateway is the heaviest part.
+Specs to target: **8 GB RAM, ~25 GB disk, Ubuntu 24.04 LTS**. FOUR IB Gateways
+run here, one per agent, and each is a JVM wanting roughly 700 MB-1 GB. A 4 GB
+box will OOM-kill a gateway mid-session, which looks exactly like a login
+failure. `deploy/bootstrap.sh` adds swap if RAM is short, but 8 GB is the
+right target.
 
 ---
 
@@ -72,13 +112,21 @@ rsync -avz --exclude data/live --exclude .venv --exclude '__pycache__' \
   "storage-stress/" <user>@<vm-ip>:~/storage-stress/
 ```
 
-**Create `.env` on the VM** (never commit it; create it fresh here):
+**Create `.env` on the VM** — or just run `bash deploy/bootstrap.sh`, which
+prompts for all four logins and writes this for you:
+
 ```bash
 cat > .env <<'EOF'
-# Headless IB Gateway login (PAPER credentials) — the ONLY secrets this
-# stack needs.
-TWS_USERID=your_ibkr_paper_username
-TWS_PASSWORD=your_ibkr_paper_password
+# One PAPER login per agent. Four separate IBKR usernames — reusing one
+# across two gateways makes them disconnect each other.
+TWS_USERID_0=paper_username_for_agent_0
+TWS_PASSWORD_0=paper_password_for_agent_0
+TWS_USERID_1=paper_username_for_agent_1
+TWS_PASSWORD_1=paper_password_for_agent_1
+TWS_USERID_2=paper_username_for_agent_2
+TWS_PASSWORD_2=paper_password_for_agent_2
+TWS_USERID_3=paper_username_for_agent_3
+TWS_PASSWORD_3=paper_password_for_agent_3
 EOF
 chmod 600 .env               # readable only by you
 ```
@@ -113,30 +161,42 @@ target positions without sending a single order:
 docker compose exec engine python scripts/run_xsec_live.py --job rebalance --dry-run
 ```
 
-Read the `[SIZING]` line it prints. The engine sizes against the account's real
-equity, not the configured book:
+You should see **one `[SIZING]` line per agent**, each naming its own account:
 
 ```
-capacity_per_agent = (equity × 0.50) / (2 × n_agents × 0.12)
+  account mode: per-agent (one paper account each)
+  [SIZING] agent_0: equity $1,000,000 — book $2,000,000/agent is within capacity
+  [SIZING] agent_1: equity $1,000,000 — book $2,000,000/agent is within capacity
+  ...
 ```
 
-Inverted, that gives the paper equity each book size requires:
+The engine sizes against each account's real equity, not the configured book:
 
-| Target book/agent | Paper equity needed | Result |
-|---|---|---|
-| $250k | $480k | only 11/22 markets tradeable, 31% avg weight error |
-| **$2.5M** | **$4.8M** | 22/22 markets, 8.8% error — **minimum viable** |
-| $10M | $19.2M | 22/22 markets, 1.9% error — the `xsec.yaml` target |
+```
+capacity_per_agent = (equity × 0.50) / (2 × n_share × 0.12)
+```
 
-If more than **30%** of intended positions round to zero contracts, the engine
-aborts the entire rebalance *before* sending anything, and prints why. That is
-correct behaviour, not a fault: a book that can only hold half its universe is
-a different, smaller strategy than the one that was backtested.
+`n_share` is how many agents share that account — **1** in per-agent mode,
+which is the whole point. At IBKR's $1M cap:
 
-The fix is to raise the paper balance — IBKR Client Portal → Settings → Paper
-Trading Account → reset with a larger starting balance — **not** to narrow the
-universe. A 17-market narrowing was tested and rejected: carry stopped beating
-chance and drawdown worsened by 17 points (`docs/SUMMER_SUMMARY.md` §6).
+| Topology | Book/agent | Markets tradeable | Weight error |
+|---|---|---|---|
+| Shared, 4 agents | $520,833 | **18/22** — loses GC, HO, GF, HG | 23.8% |
+| **Per-agent, $1M each** | **$2,000,000** | **22/22** | **~9%** |
+
+Only four of 22 markets dropping sounds mild, but those four are exactly the
+markets the rejected 17-market narrowing removed — the configuration in which
+carry stopped beating chance.
+
+If more than **30%** of intended positions round to zero, the engine aborts the
+entire rebalance *before* sending anything, and prints why. That is correct
+behaviour: a book that cannot hold its universe is a different, smaller
+strategy than the one that was backtested.
+
+If a `[SIZING]` line reports less than $2M, that agent's paper account has not
+been topped up — reset it in Client Portal → Settings → Paper Trading Account
+Reset → **Other** → `1000000`. Do **not** narrow the universe instead; that was
+tested and rejected (`docs/SUMMER_SUMMARY.md` §6).
 
 **Then launch for real** (optional — otherwise the scheduler picks it up at the
 next 10:30 ET weekday slot, since the launch is self-healing):

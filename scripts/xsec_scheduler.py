@@ -75,15 +75,25 @@ def is_last_business_day(d: dt.date) -> bool:
     return d == cur
 
 
-def run_job(args: list[str], label: str, log_dir: Path) -> None:
+def run_job(args: list[str], label: str, log_dir: Path) -> int:
+    """Run one job as a subprocess. Returns its exit code.
+
+    The code matters for `flatten`: launching onto a book we failed to clear
+    would mix leftover positions into the forward record, and every subsequent
+    mark for that agent would be fiction.
+    """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"xsec-{label}-{dt.date.today():%Y-%m-%d}.log"
     print(f"[xsec-scheduler] firing {label} -> {log_path}")
     with open(log_path, "a") as log:
         log.write(f"\n===== {label} @ {dt.datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
         log.flush()
-        subprocess.run([sys.executable, *args], stdout=log,
-                       stderr=subprocess.STDOUT, check=False, cwd=ROOT)
+        proc = subprocess.run([sys.executable, *args], stdout=log,
+                              stderr=subprocess.STDOUT, check=False, cwd=ROOT)
+    if proc.returncode != 0:
+        print(f"[xsec-scheduler] {label} exited {proc.returncode} "
+              f"(see {log_path})", file=sys.stderr)
+    return proc.returncode
 
 
 def main() -> None:
@@ -127,13 +137,25 @@ def main() -> None:
                 # Start from a clean book on a launch: leftover positions from
                 # earlier testing would otherwise contaminate both the forward
                 # record and the margin calculation.
+                launch_ok = True
                 if needs_launch:
-                    run_job(["scripts/flatten_account.py", "--confirm"],
-                            "flatten", log_dir)
-                    time.sleep(45)      # let the closes settle before sizing
+                    # flatten_account.py exits non-zero if any account still
+                    # holds positions or a gateway was unreachable. Launching
+                    # anyway would inherit those positions into a book the
+                    # ledger believes is empty.
+                    rc = run_job(["scripts/flatten_account.py", "--confirm"],
+                                 "flatten", log_dir)
+                    if rc != 0:
+                        launch_ok = False
+                        print("[xsec-scheduler] flatten did not fully clear "
+                              "the accounts — SKIPPING launch. Will retry at "
+                              "the next slot.", file=sys.stderr)
+                    else:
+                        time.sleep(45)  # let the closes settle before sizing
 
-                run_job(["scripts/run_xsec_live.py", "--job", "rebalance"],
-                        "rebalance", log_dir)
+                if launch_ok:
+                    run_job(["scripts/run_xsec_live.py", "--job", "rebalance"],
+                            "rebalance", log_dir)
 
             # ---- DAILY MARK -----------------------------------------------
             if (now.weekday() in [_DAYS[d] for d in sched["mark_days"]]

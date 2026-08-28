@@ -69,16 +69,78 @@ def open_ledger(root: Path, cfg: dict):
     return con
 
 
-def connect_ib(cfg: dict):
-    """Connect to IB Gateway with retries (it restarts nightly)."""
+def per_agent_accounts(cfg: dict) -> bool:
+    """True when each agent trades its OWN IBKR paper account.
+
+    WHY THIS MODE EXISTS
+    --------------------
+    IBKR caps a paper account at $1,000,000. Four agents sharing one account
+    therefore get, after the margin buffer:
+
+        (1,000,000 * 0.50) / (2 * 4 * 0.12) = $520,833 per agent
+
+    At that book size four markets -- gold, heating oil, feeder cattle and
+    copper -- round to zero contracts and drop out. Those are four of the five
+    markets whose removal was already TESTED AND REJECTED: on the 17-market
+    universe carry stopped beating chance (Sharpe 0.24 -> 0.12, annual return
+    +2.91% -> +0.05%) and drawdown worsened from -36% to -53%.
+
+    So the shared-account layout would silently reproduce the exact universe we
+    rejected, and the forward test could not distinguish "carry does not work"
+    from "we could not trade the markets carry needs".
+
+    Giving each agent its own $1,000,000 account removes the division by
+    n_agents entirely:
+
+        (1,000,000 * 0.50) / (2 * 1 * 0.12) = $2,083,333 per agent
+
+    which holds all 22 markets at ~9% average weight error, without relaxing
+    the conservative margin assumption.
+    """
+    return str(cfg["ibkr"].get("account_mode", "shared")).lower() == "per_agent"
+
+
+def endpoint_for(cfg: dict, agent: str | None) -> tuple[str, int]:
+    """Resolve which gateway an agent connects through.
+
+    Precedence, highest first:
+      1. IBKR_HOST_<AGENT> / IBKR_PORT_<AGENT>   (e.g. IBKR_HOST_AGENT_0)
+      2. cfg["ibkr"]["gateways"][agent]
+      3. IBKR_HOST / IBKR_PORT                    (shared endpoint)
+      4. cfg["ibkr"]["host"] / ["port"]
+
+    Per-agent environment overrides exist so docker-compose can point each
+    agent at its own gateway container without editing the frozen spec.
+    """
+    import os
+    ib_cfg = cfg["ibkr"]
+    host, port = ib_cfg["host"], int(ib_cfg["port"])
+
+    if agent:
+        gw = (ib_cfg.get("gateways") or {}).get(agent) or {}
+        host = gw.get("host", host)
+        port = int(gw.get("port", port))
+        suffix = agent.upper()
+        host = os.environ.get(f"IBKR_HOST_{suffix}", host)
+        port = int(os.environ.get(f"IBKR_PORT_{suffix}", port))
+    return host, port
+
+
+def connect_ib(cfg: dict, agent: str | None = None):
+    """Connect to an IB Gateway with retries (gateways restart nightly).
+
+    `agent` selects that agent's own gateway when running in per-agent-account
+    mode; None uses the shared endpoint.
+    """
     from ib_async import IB
     import time
     ib_cfg = cfg["ibkr"]
+    host, port = endpoint_for(cfg, agent)
     last = None
     for attempt in range(1, ib_cfg["connect_retries"] + 1):
         try:
             ib = IB()
-            ib.connect(ib_cfg["host"], ib_cfg["port"],
+            ib.connect(host, port,
                        clientId=ib_cfg["client_id"],
                        timeout=ib_cfg["connect_timeout_s"])
             ib.reqMarketDataType(ib_cfg["market_data_type"])
@@ -86,7 +148,9 @@ def connect_ib(cfg: dict):
         except Exception as e:                     # noqa: BLE001
             last = e
             time.sleep(5 * attempt)
-    raise ConnectionError(f"IB Gateway unreachable: {last}")
+    raise ConnectionError(
+        f"IB Gateway unreachable at {host}:{port}"
+        + (f" (for {agent})" if agent else "") + f": {last}")
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +247,41 @@ def account_equity_usd(ib) -> float | None:
     return amount
 
 
+def size_book(cfg: dict, equity: float | None, n_share: int,
+              label: str) -> float:
+    """Book size per agent, constrained by what the account can actually margin.
+
+        capacity = (equity * 0.50) / (2 * n_share * 0.12)
+
+    Futures initial margin runs ~5-12% of notional; we assume 12% (the
+    conservative end) and keep a 50% safety buffer, because a rejected order is
+    worse than a slightly small position. The factor of 2 is because a
+    dollar-neutral book carries gross exposure of twice its book size.
+
+    `n_share` is how many agents share this one account: len(agents) in shared
+    mode, 1 when each agent has its own account. That divisor is the entire
+    reason per-agent accounts exist -- see per_agent_accounts().
+
+    Returns the configured book when the account can support it, the capacity
+    when it cannot, and the configured book (with a warning) when equity cannot
+    be read -- never silently zero.
+    """
+    book = float(cfg["capital"]["book_size"])
+    if not equity:
+        print(f"  [WARN] {label}: could not read account equity; "
+              f"using configured ${book:,.0f}")
+        return book
+    capacity = (equity * 0.50) / (2 * n_share * 0.12)
+    if capacity < book:
+        print(f"  [SIZING] {label}: equity ${equity:,.0f} supports "
+              f"~${capacity:,.0f}/agent; config asks ${book:,.0f}. "
+              f"Using the smaller.")
+        return capacity
+    print(f"  [SIZING] {label}: equity ${equity:,.0f} — "
+          f"book ${book:,.0f}/agent is within capacity")
+    return book
+
+
 def agent_leverage(con, agent: str, cfg: dict) -> float:
     """Vol-target leverage from the agent's OWN realised daily returns.
 
@@ -213,32 +312,27 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] xsec rebalance"
           f"{' (DRY RUN)' if dry_run else ''}")
 
-    ib = connect_ib(cfg)
+    solo = per_agent_accounts(cfg)
+    agent_names = list(cfg["signal"]["agents"])
+    print(f"  account mode: {'per-agent (one paper account each)' if solo else 'shared (all agents, one account)'}")
+
+    # THE SIGNAL CONNECTION. Universe resolution and the factor panel are
+    # identical for every agent -- agents differ only in which factor COLUMNS
+    # they are allowed to read -- so both are computed once, here, and reused.
+    # In per-agent mode this borrows the first agent's gateway; any gateway
+    # returns the same market data.
+    ib_exec = None          # per-agent connection, cleaned up in finally
+    ib = connect_ib(cfg, agent_names[0] if solo else None)
     try:
         res = UniverseResolver(ib, cfg["universe"])
 
         # --- SIZE AGAINST THE REAL ACCOUNT, NOT THE CONFIGURED ASPIRATION ---
-        # Four agents share one account, so each may use at most its share of
-        # margin capacity. Futures initial margin runs ~5-12% of notional; we
-        # assume 12% (conservative) and keep a 50% safety buffer, because a
-        # rejected order is worse than a slightly small position.
-        equity = account_equity_usd(ib)
-        n_agents = len(cfg["signal"]["agents"])
-        book = cfg["capital"]["book_size"]
-        if equity:
-            # dollar-neutral => gross = 2 x book, so:
-            #   margin_needed ≈ 2 * book * n_agents * 0.12
-            capacity = (equity * 0.50) / (2 * n_agents * 0.12)
-            if capacity < book:
-                print(f"  [SIZING] account equity ${equity:,.0f} supports "
-                      f"~${capacity:,.0f}/agent; config asked for "
-                      f"${book:,.0f}. Using the smaller.")
-                book = capacity
-            else:
-                print(f"  [SIZING] account equity ${equity:,.0f} — "
-                      f"book ${book:,.0f}/agent is within capacity")
-        else:
-            print("  [WARN] could not read account equity; using configured book")
+        shared_book = None
+        if not solo:
+            # All agents share one account, so each may use at most its share
+            # of the margin capacity.
+            equity = account_equity_usd(ib)
+            shared_book = size_book(cfg, equity, len(agent_names), "all agents")
 
         # SIGNALS COME FROM IBKR, NOT THE R2 MIRROR. The mirror is a periodic
         # snapshot: measured 2026-08-12 every market was stale (43-243 days),
@@ -279,6 +373,24 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
             if weights.empty:
                 print(f"  {agent:<9} no targets (cross-section too thin)")
                 continue
+
+            # --- THIS AGENT'S ACCOUNT -------------------------------------
+            # In per-agent mode each rung trades its own paper account through
+            # its own gateway, so the connection and the book size are resolved
+            # here rather than once for the whole run. The contract objects in
+            # `market` were resolved on the signal connection; they are plain
+            # data (conId, exchange, expiry) and remain valid on any session.
+            if solo:
+                if ib_exec is not None:
+                    ib_exec.disconnect()
+                    ib_exec = None
+                ib_exec = connect_ib(cfg, agent)
+                book = size_book(cfg, account_equity_usd(ib_exec), 1, agent)
+            else:
+                book = shared_book
+            # trade_ib is the session orders actually go through: the agent's
+            # own gateway in per-agent mode, otherwise the shared one.
+            trade_ib = ib_exec if solo else ib
 
             lev = agent_leverage(con, agent, cfg)
             held = B.get_positions(con, agent)
@@ -360,7 +472,8 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
                     continue
 
                 action = "BUY" if delta > 0 else "SELL"
-                result = place_order(ib, agent, ticker, info, action, abs(delta))
+                result = place_order(trade_ib, agent, ticker, info, action,
+                                     abs(delta))
                 oid = B.record_order(con, agent, result["order_ref"], ticker,
                                      action, abs(delta), info["local_symbol"],
                                      result["ib_order_id"], result["status"])
@@ -412,6 +525,14 @@ def run_rebalance(root: Path, dry_run: bool = False) -> None:
                 msg += f"  REJECTED={n_rejected} [{', '.join(rejects[:6])}]"
             print(msg)
     finally:
+        # Disconnect the per-agent session too. Tracking it in a variable
+        # rather than a with-block keeps the cleanup correct on an exception
+        # mid-agent without indenting the whole trading body.
+        if ib_exec is not None:
+            try:
+                ib_exec.disconnect()
+            except Exception:                       # noqa: BLE001
+                pass
         ib.disconnect()
     con.close()
 
@@ -474,7 +595,14 @@ def run_mark(root: Path) -> None:
     today = dt.date.today()
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] xsec mark")
 
-    ib = connect_ib(cfg)
+    # Marking needs PRICES ONLY — positions come from the local ledger, which
+    # is the source of truth for per-agent attribution. Any gateway returns the
+    # same market data, so one connection serves all agents. In per-agent mode
+    # that must still be a real gateway: the shared 127.0.0.1 endpoint in the
+    # frozen spec does not resolve inside the compose network.
+    mark_agent = (list(cfg["signal"]["agents"])[0]
+                  if per_agent_accounts(cfg) else None)
+    ib = connect_ib(cfg, mark_agent)
     try:
         res = UniverseResolver(ib, cfg["universe"])
         price_cache: dict[str, dict] = {}

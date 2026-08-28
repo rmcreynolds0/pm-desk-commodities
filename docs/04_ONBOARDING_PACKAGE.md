@@ -150,7 +150,7 @@ loses money rather than just producing a wrong number.
 |---|---|---|---|
 | GitHub account | Free | Self | Everyone, day 1 |
 | Python 3.11+ / git | Free | Self | Everyone, day 1 |
-| IBKR **paper** account | Free | Self (standalone paper login) | Execution team |
+| IBKR **paper** accounts (x4) | Free | Self — one per agent, separate usernames | Execution team |
 | EIA API key | Free | Self, [eia.gov/opendata](https://www.eia.gov/opendata/) | Data team only |
 | FRED API key | Free | Self | Data team only |
 | NOAA CDO token | Free | Self | Data team only |
@@ -193,19 +193,19 @@ the budget does.
 
 | Item | Cost | Notes |
 |---|---|---|
-| VM — Hetzner CX22 (2 vCPU / 4 GB, x86-64) | ≈ **CAD 7/mo** | Cheapest host that actually runs IB Gateway |
+| VM — Hetzner CX32 (4 vCPU / 8 GB, x86-64) | ≈ **CAD 12/mo** | Runs four IB Gateways, one per agent |
 | Cloudflare R2 | **CAD 0** at current volume | 10 GB storage and egress sit inside the free tier |
 | IBKR paper account | **CAD 0** | Paper only; no capital at risk |
 | EIA / FRED / NOAA APIs | **CAD 0** | Free public keys |
 | GitHub | **CAD 0** | Private repos are free |
 | LSEG Datastream | **CAD 0** to us | Queen's university licence |
-| **Total** | **≈ CAD 84 / year** | |
+| **Total** | **≈ CAD 144 / year** | |
 
 ### One-time alternative
 
 | Item | Cost | Trade-off |
 |---|---|---|
-| x86 mini PC (Intel N100, 8 GB) | ≈ **CAD 200** once | No recurring fee, but needs mains power and a stable home network; pays back against the VM in ~2.5 years |
+| x86 mini PC (Intel N100, 16 GB) | ≈ **CAD 250** once | No recurring fee, but needs mains power and a stable home network; pays back against the VM in ~1.7 years |
 
 ### Explicitly *not* in the budget
 
