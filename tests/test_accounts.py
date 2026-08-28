@@ -139,3 +139,31 @@ def test_sizing_formula_matches_documented_thresholds():
     cfg["capital"]["book_size"] = 10_000_000
     # $19.2M shared across 4 agents is documented as exactly the $10M/agent point.
     assert E.size_book(cfg, 19_200_000, 4, "doc") == pytest.approx(10_000_000)
+
+
+# --------------------------------------------------------------------------
+# SHAKEDOWN OVERRIDE
+# --------------------------------------------------------------------------
+def test_env_can_force_shared_mode_for_a_shakedown(monkeypatch):
+    """Running a throwaway test on one account must not require editing the
+    frozen spec — a temporary value written there survives into production."""
+    monkeypatch.setenv("XSEC_ACCOUNT_MODE", "shared")
+    assert E.per_agent_accounts(base_cfg()) is False
+
+
+def test_env_can_force_per_agent_mode(monkeypatch):
+    monkeypatch.setenv("XSEC_ACCOUNT_MODE", "per_agent")
+    assert E.per_agent_accounts(base_cfg(account_mode="shared")) is True
+
+
+def test_config_wins_when_env_absent(monkeypatch):
+    monkeypatch.delenv("XSEC_ACCOUNT_MODE", raising=False)
+    assert E.per_agent_accounts(base_cfg()) is True
+
+
+def test_shakedown_book_matches_measured_shared_figure():
+    """The $520,833 quoted in the docs must come from this code path."""
+    cfg = base_cfg()
+    cfg["capital"]["book_size"] = 10_000_000      # ceiling well above capacity
+    assert E.size_book(cfg, 1_000_000, 4, "shakedown") == pytest.approx(
+        520_833, rel=1e-3)

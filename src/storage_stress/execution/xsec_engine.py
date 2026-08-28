@@ -96,8 +96,17 @@ def per_agent_accounts(cfg: dict) -> bool:
 
     which holds all 22 markets at ~9% average weight error, without relaxing
     the conservative margin assumption.
+
+    XSEC_ACCOUNT_MODE overrides the config for TEMPORARY runs -- notably a
+    shakedown on a single account before the other three are open. It is an
+    environment variable rather than a config edit on purpose: a temporary
+    setting written into the frozen spec is exactly the kind of thing that
+    survives into production unnoticed. The env var dies with the shell.
     """
-    return str(cfg["ibkr"].get("account_mode", "shared")).lower() == "per_agent"
+    import os
+    mode = os.environ.get("XSEC_ACCOUNT_MODE",
+                          cfg["ibkr"].get("account_mode", "shared"))
+    return str(mode).lower() == "per_agent"
 
 
 def endpoint_for(cfg: dict, agent: str | None) -> tuple[str, int]:
