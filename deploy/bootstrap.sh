@@ -197,6 +197,20 @@ mkdir -p data/live/logs data/processed data/raw data/interim
 COMPOSE_ARGS=""
 [ "$CONFIGURED" -eq 4 ] && COMPOSE_ARGS="--profile full"
 
+# The dashboard costs ~200 MB. On a 1 GB free-tier host that is the difference
+# between the gateway JVM having headroom and the OOM killer taking it out
+# mid-session -- a failure whose logs look exactly like a login problem. Skip
+# it there; deploy/status.sh gives the same information over SSH.
+if [ "$MEM_MB" -ge 1400 ]; then
+  COMPOSE_ARGS="$COMPOSE_ARGS --profile ui"
+  DASH=yes
+else
+  warn "only ${MEM_MB} MB RAM — skipping the dashboard container to leave"
+  warn "headroom for the gateway. Use 'bash deploy/status.sh' instead, or"
+  warn "start it later with: docker compose --profile ui up -d"
+  DASH=no
+fi
+
 say "building images (the first build takes a few minutes)"
 docker compose $COMPOSE_ARGS build
 say "starting the stack ($CONFIGURED gateway(s) + engine + dashboard)"
@@ -269,7 +283,13 @@ echo "     If it names a smaller number, raise the IBKR paper balance:"
 echo "       Client Portal -> Settings -> Paper Trading Account Reset -> Other"
 echo "     \$10M/agent needs about \$19.2M of paper equity. See docs/DEPLOY.md."
 echo
+if [ "$DASH" = "no" ]; then
+echo "  2. No dashboard on this host (too little RAM). Check status with:"
+echo ""
+echo "       bash deploy/status.sh"
+else
 echo "  2. View the dashboard from your laptop over an SSH tunnel:"
+fi
 echo
 echo "       ssh -L 8501:localhost:8501 $(whoami)@<this-vm-ip>"
 echo "       then browse to http://localhost:8501"

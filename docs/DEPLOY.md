@@ -74,7 +74,10 @@ configured, so ARM options are listed below only to be ruled out.
 | **Hetzner CX32** | ~€8/mo | x86-64 | **Recommended.** 4 vCPU / 8 GB — enough for four gateways. |
 | Hetzner CX22 | ~€4/mo | x86-64 | 2 vCPU / 4 GB. Too small for four gateways; only viable in shared-account mode. |
 | **x86 mini PC** (N100, 16 GB) | ~$250 once | x86-64 | Works well. No recurring cost; needs mains power and a stable network. |
-| ~~Oracle Cloud Always Free~~ | $0 | **ARM Ampere** | **Will not work** — no ARM build of IB Gateway. The free tier is tempting and this is the trap. |
+| **Oracle Always Free — AMD E2.1.Micro** | **$0 forever** | **x86-64** | **Works, for ONE agent.** 1 GB RAM: needs swap and no dashboard container. Two instances included. |
+| ~~Oracle Always Free — Ampere A1~~ | $0 | **ARM** | **Will not work** — no ARM build of IB Gateway. 4 cores / 24 GB makes this the tempting trap; take the AMD micro above instead. |
+| **Google Cloud e2-micro** | $0 forever | x86-64 | Same profile as the Oracle AMD micro. us-west1 / us-central1 / us-east1 only. |
+| **A spare laptop or desktop** | $0 | x86-64 | **Best free option.** Real RAM, scales to all four agents. Disable lid-close suspend. |
 | ~~Raspberry Pi~~ | ~$80 once | **ARM** | **Will not work** — same reason. |
 
 Specs to target: **8 GB RAM, ~25 GB disk, Ubuntu 24.04 LTS**. FOUR IB Gateways

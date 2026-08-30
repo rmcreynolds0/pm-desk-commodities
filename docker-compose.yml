@@ -150,8 +150,15 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
+  # PROFILE-GATED so a 1 GB free-tier host can skip it. Streamlit costs about
+  # 200 MB, which on a 1 GB box is the difference between the gateway JVM
+  # having headroom and the OOM killer taking it out mid-session. Without it,
+  # read the ledger over SSH with deploy/status.sh, or copy xsec_books.db down
+  # and run the dashboard locally.
+  #   docker compose --profile ui up -d      # start it
   dashboard:
     build: .
+    profiles: ["ui"]
     restart: unless-stopped
     init: true
     # xsec_live.py reads the LIVE ledger (data/live/xsec_books.db).
