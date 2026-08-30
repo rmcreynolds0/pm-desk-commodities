@@ -45,9 +45,13 @@ case "$ARCH" in
     ok "architecture $ARCH (amd64) — IB Gateway supported" ;;
   aarch64|arm64)
     die "architecture $ARCH is ARM. IB Gateway has NO ARM build, so this stack
-     cannot run here at all. This rules out Oracle Cloud Always-Free Ampere
-     shapes and Raspberry Pi. Use an x86-64 host: Hetzner CX22 (~EUR 4/mo),
-     DigitalOcean (~USD 6/mo), or an N100 mini PC (~USD 150 once)." ;;
+     cannot run here at all. This rules out Oracle Always-Free AMPERE shapes
+     and Raspberry Pi. Use an x86-64 host instead:
+       FREE  Oracle Always Free AMD VM.Standard.E2.1.Micro (1 GB, x86)
+       FREE  Google Cloud e2-micro (1 GB, us-west1/us-central1/us-east1)
+       FREE  any spare laptop or desktop
+       PAID  Hetzner CX32 ~EUR 8/mo (8 GB, needed for all four agents)
+     Note Oracle offers BOTH an ARM shape and an AMD one -- take the AMD." ;;
   *)
     warn "unrecognised architecture $ARCH — proceeding, but expect trouble" ;;
 esac
@@ -60,8 +64,17 @@ say "resources: ${MEM_MB} MB RAM, ${DISK_GB} GB free disk"
 # requirement depends on how many agents are configured -- which we do not
 # know until step 5. Enforce the ONE-agent floor here, and re-check against
 # the actual count once .env has been read.
-[ "$MEM_MB" -ge 1800 ] || die "need at least 2 GB RAM even for one gateway;
+# The floor is set for the free tiers: Oracle's AMD E2.1.Micro and Google's
+# e2-micro both report ~950 MB. One gateway DOES run there with swap and
+# without the dashboard container, so refusing at 2 GB would rule out the only
+# free x86 hosts. Below ~700 MB the JVM will not start at all.
+[ "$MEM_MB" -ge 700 ] || die "need at least ~1 GB RAM for one gateway;
      found ${MEM_MB} MB."
+if [ "$MEM_MB" -lt 1800 ]; then
+  warn "${MEM_MB} MB RAM — free-tier sized. One agent only, swap required,"
+  warn "and the dashboard container will be skipped. Fine for agent_0; you"
+  warn "will need ~8 GB before adding the other three."
+fi
 [ "$DISK_GB" -ge 15 ] || die "need at least 15 GB free disk; found ${DISK_GB} GB"
 
 # Swap regardless: it is what stops the OOM killer taking a gateway down
