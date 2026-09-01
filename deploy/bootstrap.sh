@@ -77,11 +77,20 @@ if [ "$MEM_MB" -lt 1800 ]; then
 fi
 [ "$DISK_GB" -ge 15 ] || die "need at least 15 GB free disk; found ${DISK_GB} GB"
 
-# Swap regardless: it is what stops the OOM killer taking a gateway down
-# mid-session, and that failure looks exactly like a login failure in the logs.
-if [ "$MEM_MB" -lt 7600 ] && ! swapon --show | grep -q . ; then
-  say "adding a 4 GB swapfile (headroom for the gateway JVMs)"
-  fallocate -l 4G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=4096
+# Swap on ANY size of host that lacks it. Steady-state memory is not the risk
+# -- the spike is all four gateway JVMs authenticating at once during startup,
+# which an 8 GB box can hit. Without swap the OOM killer takes one gateway
+# down, and the symptom (silent restart, nothing useful in the log) looks
+# exactly like a login failure, which is the wrong thing to spend an hour
+# debugging. Swap costs only disk.
+if ! swapon --show | grep -q . ; then
+  SWAP_GB=4
+  # Explicit if, not `[ ] && VAR=`: bash exempts that form under set -e, but
+  # it is a footgun worth not modelling in a script that runs unattended.
+  if [ "$MEM_MB" -ge 7600 ]; then SWAP_GB=2; fi   # large host: smaller cushion
+  say "adding a ${SWAP_GB} GB swapfile (headroom for simultaneous gateway logins)"
+  fallocate -l "${SWAP_GB}G" /swapfile 2>/dev/null \
+    || dd if=/dev/zero of=/swapfile bs=1M count=$((SWAP_GB * 1024))
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
   swapon /swapfile
