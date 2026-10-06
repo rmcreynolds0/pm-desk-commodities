@@ -75,6 +75,26 @@ signal:
   # No fitted factor weights -- deliberate, to avoid in-sample optimisation.
   blend: equal_weight_zscore
 
+  # -------------------------------------------------------------------------
+  # WHICH RUNGS ACTUALLY TRADE
+  # -------------------------------------------------------------------------
+  # `agents` above defines the research ladder and must keep all four rungs:
+  # the backtest, the null comparison and every published figure depend on it.
+  # `live_agents` is which of those are wired to a real paper account.
+  #
+  # Currently ONE. Each agent needs its own IBKR paper account (the $1,000,000
+  # cap makes a shared account drop gold, heating oil, feeder cattle and copper
+  # -- see ibkr.account_mode), and only one account is open. Running the single
+  # best rung on a correctly-sized book beats running four on starved ones.
+  #
+  # agent_3 is that rung: carry + momentum + basis-momentum, Sharpe 0.553 over
+  # 2000-2026 at the 99.5th percentile of a 200-seed null.
+  #
+  # To add the others later, append them here as their accounts open and point
+  # each at its gateway in ibkr.gateways. The scheduler launches only agents
+  # that have never traded, so the running book is untouched.
+  live_agents: [agent_3]
+
 # ---------------------------------------------------------------------------
 # PORTFOLIO CONSTRUCTION
 # ---------------------------------------------------------------------------
@@ -161,11 +181,15 @@ ibkr:
   # Each agent's gateway. Hostnames are the docker-compose service names; the
   # engine reaches them on the compose network. Override per agent with
   # IBKR_HOST_AGENT_0 / IBKR_PORT_AGENT_0 etc. for local testing.
+  # Gateways are numbered by ACCOUNT ARRIVAL ORDER, agents by ladder position,
+  # so this is deliberately NOT agent_N -> gateway-N. ib-gateway-0 is the only
+  # container in compose's default profile — the one account that exists today
+  # — so it serves agent_3, the single live rung (see signal.live_agents).
   gateways:
-    agent_0: {host: ib-gateway-0, port: 4002}
-    agent_1: {host: ib-gateway-1, port: 4002}
-    agent_2: {host: ib-gateway-2, port: 4002}
-    agent_3: {host: ib-gateway-3, port: 4002}
+    agent_3: {host: ib-gateway-0, port: 4002}   # live now
+    agent_0: {host: ib-gateway-1, port: 4002}   # when account 2 opens
+    agent_1: {host: ib-gateway-2, port: 4002}
+    agent_2: {host: ib-gateway-3, port: 4002}
 
 # ---------------------------------------------------------------------------
 # SCHEDULE (US/Eastern)

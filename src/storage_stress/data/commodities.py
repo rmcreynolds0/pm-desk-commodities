@@ -225,3 +225,121 @@ def add_factors(panel: pd.DataFrame, px: pd.DataFrame,
             np.prod, raw=True) - 1)
     panel["basis_mom"] = panel["mom"] - panel["mom_second"]
     return panel
+
+
+# ---------------------------------------------------------------------------
+# STRESS — the natural-gas DSI method, generalised to the cross-section.
+# ---------------------------------------------------------------------------
+def add_stress(panel: pd.DataFrame, k: float = 4.0, span_days: int = 15,
+               scale_window: int = 756, resid_window: int = 756,
+               scale_q: float = 0.90) -> pd.DataFrame:
+    """Attach a `stress` factor built with the Deliverability Stress Index
+    pipeline from the retired natural-gas strategy.
+
+    WHY THIS EXISTS
+    ---------------
+    The gas strategy was retired because its HYPOTHESIS was falsified, not
+    because its METHOD was wrong. The method -- turn a physical-state variable
+    into a signal by making it convex, smoothing it, removing the seasonality
+    the market already prices, and stripping the part explained by something
+    else -- is reusable. This applies those five steps to the curve state of
+    every market in the cross-section.
+
+    THE FIVE STEPS, and what each maps to
+
+      1. UTILIZATION.  Gas used `net_flow / max_cycling_rate`: how close the
+         system is to its physical limit. Here the analogue is how extreme the
+         curve is relative to its own recent range:
+
+             u = carry / rolling_quantile(|carry|, 90th, 3y)
+
+         The 90th percentile rather than the max, because a max is set by a
+         single outlier and would make `u` jump around for reasons that have
+         nothing to do with the market. Clipped to [-1.2, 1.2] exactly as the
+         gas version clipped utilization.
+
+      2. CONVEX TRANSFORM.  Reuses dsi.convex_stress with the SAME
+         pre-registered k=4.0. This is the actual idea being carried over:
+         stress is not linear in state. A curve at 30% of its normal range
+         means little; one at 95% means a constraint is binding. Near u=0 the
+         transform is ~linear, near |u|=1 it accelerates.
+
+      3. SMOOTHING.  15 trading days ~ the 3 weeks the weekly gas version used.
+         Causal EWMA; no lookahead.
+
+      4. DESEASONALIZE.  Commodity curves are enormously seasonal -- gas,
+         heating oil, grains and cattle all have calendar-driven shapes the
+         market already prices. Subtracting the expanding week-of-year mean
+         leaves only the part of the curve state that is unusual FOR THE TIME
+         OF YEAR. Expanding and shifted by one so a year never informs its own
+         baseline.
+
+      5. RESIDUALIZE.  The gas version removed the component explained by
+         regional basis. The cross-sectional analogue that actually earns its
+         place is removing the component explained by CARRY ITSELF.
+
+         This step is the difference between a useful factor and a redundant
+         one. Steps 1-2 make stress a convex function of carry, so without
+         this it would be ~0.9 correlated with carry and add almost nothing to
+         a blend that already contains it. Residualizing leaves only the part
+         of curve-state extremity that the raw slope does not already say.
+
+         Implemented as a vectorised rolling univariate OLS (beta from rolling
+         covariance / variance) rather than the gas version's row-by-row
+         statsmodels refit: that loop was fine for 1,527 weekly observations
+         and would be ~147,000 regressions here.
+
+    NOT cross-sectionally demeaned here -- agents.xsec z-scores every factor
+    within each date already, and doing it twice would be a silent no-op that
+    future readers would mistake for a safeguard.
+    """
+    from storage_stress.signal.dsi import convex_stress
+
+    panel = panel.sort_values(["ticker", "date"]).copy()
+    g = panel.groupby("ticker", group_keys=False)
+
+    # --- step 1: curve-state extremity, bounded and signed -----------------
+    # Trailing scale is the 90th percentile of |carry| over ~3 years. min_periods
+    # keeps early history usable rather than discarding the first 3 years.
+    scale = g["carry"].apply(
+        lambda s: s.abs().rolling(scale_window, min_periods=252).quantile(scale_q))
+    # Guard the divide: a market whose carry has been flat for 3 years has a
+    # near-zero scale, which would send u to infinity on the first real move.
+    scale = scale.where(scale > 1e-8)
+    panel["_u"] = (panel["carry"] / scale).clip(-1.2, 1.2)
+
+    # --- step 2: convex transform (same k as the gas strategy) -------------
+    panel["_g"] = convex_stress(panel["_u"], k=k)
+
+    # --- step 3: causal smoothing ------------------------------------------
+    panel["_g_sm"] = g["_g"].apply(
+        lambda s: s.ewm(span=span_days, adjust=False).mean())
+
+    # --- step 4: remove the seasonality the market already prices ----------
+    panel["_woy"] = panel["date"].dt.isocalendar().week.astype(int).values
+    # Expanding mean WITHIN each (ticker, week-of-year), shifted one occurrence
+    # so this year's value is excluded from its own baseline.
+    seasonal = panel.groupby(["ticker", "_woy"], group_keys=False)["_g_sm"].apply(
+        lambda s: s.expanding().mean().shift(1))
+    panel["_g_des"] = panel["_g_sm"] - seasonal.reindex(panel.index).fillna(0.0)
+
+    # --- step 5: strip the part carry already explains ---------------------
+    # Rolling univariate OLS, vectorised:
+    #     beta  = cov(stress, carry) / var(carry)
+    #     alpha = mean(stress) - beta * mean(carry)
+    #     resid = stress - (alpha + beta * carry)
+    def _residualize(df: pd.DataFrame) -> pd.Series:
+        y, x = df["_g_des"], df["carry"]
+        cov = y.rolling(resid_window, min_periods=252).cov(x)
+        var = x.rolling(resid_window, min_periods=252).var()
+        beta = (cov / var.where(var > 1e-12))
+        alpha = (y.rolling(resid_window, min_periods=252).mean()
+                 - beta * x.rolling(resid_window, min_periods=252).mean())
+        fitted = alpha + beta * x
+        # Before enough history exists to fit, fall back to the unresidualized
+        # value -- the same choice the gas version made.
+        return y - fitted.fillna(0.0)
+
+    panel["stress"] = panel.groupby("ticker", group_keys=False).apply(_residualize)
+
+    return panel.drop(columns=["_u", "_g", "_g_sm", "_woy", "_g_des"])

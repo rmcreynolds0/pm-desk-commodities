@@ -72,7 +72,11 @@ def agents_needing_launch(cfg: dict) -> list[str]:
         started = {r[0] for r in
                    con.execute("SELECT DISTINCT agent FROM decisions")}
         con.close()
-        return [a for a in cfg["signal"]["agents"] if a not in started]
+        # live_agents, not signal.agents: a rung defined for the research
+        # ladder but with no paper account yet must not be "pending launch"
+        # forever, or every scheduler tick reports work it cannot do.
+        from storage_stress.execution.xsec_engine import live_agents
+        return [a for a in live_agents(cfg) if a not in started]
     except Exception as e:                           # noqa: BLE001
         print(f"[xsec-scheduler] cannot read ledger ({e}); "
               f"assuming nothing needs launching", file=sys.stderr)

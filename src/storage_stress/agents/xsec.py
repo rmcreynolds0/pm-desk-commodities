@@ -44,6 +44,15 @@ AGENT_FACTORS: dict[str, list[str]] = {
     # scripts/carry_drop_test.py) -- iterating variants until the number
     # improves is precisely how in-sample overfitting is manufactured.
     "agent_3_nocarry": ["mom", "basis_mom"],
+
+    # --- STRESS VARIANTS -------------------------------------------------
+    # The natural-gas DSI method generalised to the cross-section (see
+    # data.commodities.add_stress). These are RESEARCH VARIANTS evaluated
+    # against a pre-committed decision rule in scripts/stress_test.py --
+    # they are not rungs of the live ladder unless that test promotes one.
+    "stress_only":  ["stress"],                           # is it a factor at all?
+    "carry_mom_stress": ["carry", "mom", "stress"],       # the literal brief
+    "all_four":     ["carry", "mom", "basis_mom", "stress"],
 }
 
 

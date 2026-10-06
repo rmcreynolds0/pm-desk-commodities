@@ -69,6 +69,34 @@ def open_ledger(root: Path, cfg: dict):
     return con
 
 
+def live_agents(cfg: dict) -> list[str]:
+    """Which agents actually TRADE, as opposed to which exist in the spec.
+
+    `signal.agents` defines the research ladder and must keep all four rungs --
+    the backtest, the null comparison and every published figure depend on it.
+    `signal.live_agents` says which of those rungs are wired to real money.
+
+    They are separate keys because the constraint is IBKR's, not the
+    strategy's: each agent needs its own paper account (the $1M cap makes a
+    shared account drop four markets), and accounts arrive one at a time. One
+    live agent with three defined is a normal, expected state -- not a
+    degraded one -- and collapsing the two lists would mean deleting rungs
+    from the research spec every time an account was missing.
+
+    Defaults to every agent, so a config without the key behaves as before.
+    """
+    declared = list(cfg["signal"]["agents"])
+    wanted = cfg["signal"].get("live_agents")
+    if not wanted:
+        return declared
+    unknown = [a for a in wanted if a not in declared]
+    if unknown:
+        raise ValueError(
+            f"signal.live_agents names {unknown}, which are not in "
+            f"signal.agents ({declared})")
+    return [a for a in declared if a in wanted]      # keep spec order
+
+
 def per_agent_accounts(cfg: dict) -> bool:
     """True when each agent trades its OWN IBKR paper account.
 
@@ -330,6 +358,8 @@ def run_rebalance(root: Path, dry_run: bool = False,
 
     solo = per_agent_accounts(cfg)
     all_agents = list(cfg["signal"]["agents"])
+    # An explicit --agents wins; otherwise trade whatever the spec marks live.
+    runnable = live_agents(cfg)
     if agents:
         unknown = [a for a in agents if a not in all_agents]
         if unknown:
@@ -339,7 +369,11 @@ def run_rebalance(root: Path, dry_run: bool = False,
         print(f"  agents: {', '.join(agent_names)}  "
               f"(SUBSET — {len(all_agents) - len(agent_names)} not run)")
     else:
-        agent_names = all_agents
+        agent_names = runnable
+        if len(runnable) < len(all_agents):
+            print(f"  agents: {', '.join(agent_names)}  "
+                  f"(live_agents — {len(all_agents) - len(runnable)} defined "
+                  f"but not trading)")
     print(f"  account mode: {'per-agent (one paper account each)' if solo else 'shared (all agents, one account)'}")
 
     # THE SIGNAL CONNECTION. Universe resolution and the factor panel are
@@ -638,7 +672,7 @@ def run_mark(root: Path) -> None:
     # state one being down must not cost every agent its mark for the day.
     if per_agent_accounts(cfg):
         ib, last_err = None, None
-        for candidate in cfg["signal"]["agents"]:
+        for candidate in live_agents(cfg):
             try:
                 ib = connect_ib(cfg, candidate)
                 print(f"  pricing via {candidate}'s gateway")

@@ -286,6 +286,30 @@ else
   ok "backup cron already present"
 fi
 
+# --- 9b. FLEX RECONCILIATION -------------------------------------------------
+# Our ledger is written by the same code that places the orders, so if that
+# code is wrong about a fill the ledger is wrong in the way hardest to catch:
+# everything downstream stays internally consistent and is simply false. This
+# project has already had that bug -- 54 positions recorded that the broker
+# never held. Flex is IBKR's own account of the same events and the only
+# independent check available.
+if grep -q '^FLEX_TOKEN=.' .env 2>/dev/null && \
+   grep -q '^FLEX_QUERY_ID=.' .env 2>/dev/null ; then
+  if ! crontab -l 2>/dev/null | grep -q 'flex_pull.py' ; then
+    say "installing nightly Flex reconciliation at 18:30 ET"
+    # After the 16:30 mark, so it checks the state the marks were computed on.
+    FLEX_LINE="30 18 * * 1-5 cd $REPO_DIR && docker compose exec -T engine python scripts/flex_pull.py >> data/live/logs/flex.log 2>&1"
+    { crontab -l 2>/dev/null; echo "$FLEX_LINE"; } | crontab -
+    ok "flex reconciliation cron installed"
+  else
+    ok "flex reconciliation cron already present"
+  fi
+else
+  warn "FLEX_TOKEN / FLEX_QUERY_ID not in .env — skipping the reconciliation"
+  warn "cron. The book will still trade, but nothing will independently check"
+  warn "the ledger against the broker. See .env.example to set it up."
+fi
+
 # --- 10. REPORT --------------------------------------------------------------
 echo
 say "stack is up"

@@ -128,10 +128,21 @@ services:
       # Per-agent gateway endpoints. These override config/xsec.yaml's
       # ibkr.gateways block, so the container topology is visible here rather
       # than only in the frozen spec.
-      IBKR_HOST_AGENT_0: ib-gateway-0
-      IBKR_HOST_AGENT_1: ib-gateway-1
-      IBKR_HOST_AGENT_2: ib-gateway-2
-      IBKR_HOST_AGENT_3: ib-gateway-3
+      #
+      # MAPPING — note this is NOT agent_N -> gateway-N.
+      #   ib-gateway-0  is the only gateway in the DEFAULT profile, i.e. the
+      #                 one account that exists today. It therefore serves
+      #                 agent_3, which config/xsec.yaml marks as the single
+      #                 live rung (the best signal: carry+mom+basis_mom).
+      #   ib-gateway-1/2/3  are behind the "full" profile and serve agents
+      #                 0, 1 and 2 as their paper accounts are opened.
+      #
+      # Gateways are numbered by ACCOUNT ARRIVAL ORDER, agents by ladder
+      # position; the two only coincide once all four accounts exist.
+      IBKR_HOST_AGENT_3: ib-gateway-0      # live now
+      IBKR_HOST_AGENT_0: ib-gateway-1      # when account 2 opens
+      IBKR_HOST_AGENT_1: ib-gateway-2      # when account 3 opens
+      IBKR_HOST_AGENT_2: ib-gateway-3      # when account 4 opens
       IBKR_PORT_AGENT_0: "4002"
       IBKR_PORT_AGENT_1: "4002"
       IBKR_PORT_AGENT_2: "4002"

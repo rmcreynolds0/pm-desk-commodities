@@ -38,6 +38,47 @@ def base_cfg(**over):
 
 
 # --------------------------------------------------------------------------
+# LIVE AGENTS — which rungs trade, vs which exist in the research spec
+# --------------------------------------------------------------------------
+def test_defaults_to_every_agent_when_key_absent():
+    """A config predating live_agents must keep trading all four, not none."""
+    cfg = base_cfg()
+    assert E.live_agents(cfg) == ["agent_0", "agent_1", "agent_2", "agent_3"]
+
+
+def test_single_live_agent():
+    """The current deployment: one IBKR account, so one trading rung, while
+    all four stay defined for the backtest and the null comparison."""
+    cfg = base_cfg()
+    cfg["signal"]["live_agents"] = ["agent_3"]
+    assert E.live_agents(cfg) == ["agent_3"]
+    # The research ladder must be untouched — every published figure uses it.
+    assert len(cfg["signal"]["agents"]) == 4
+
+
+def test_live_agents_keeps_spec_order_not_listed_order():
+    cfg = base_cfg()
+    cfg["signal"]["live_agents"] = ["agent_3", "agent_0"]
+    assert E.live_agents(cfg) == ["agent_0", "agent_3"]
+
+
+def test_empty_live_agents_means_all_not_none():
+    """An empty list is far more likely a config mistake than an instruction
+    to trade nothing, and silently trading nothing is the worst reading."""
+    cfg = base_cfg()
+    cfg["signal"]["live_agents"] = []
+    assert E.live_agents(cfg) == ["agent_0", "agent_1", "agent_2", "agent_3"]
+
+
+def test_unknown_live_agent_raises_rather_than_silently_dropping():
+    """A typo must not quietly reduce the book to fewer agents than intended."""
+    cfg = base_cfg()
+    cfg["signal"]["live_agents"] = ["agent_3", "agent_7"]
+    with pytest.raises(ValueError, match="agent_7"):
+        E.live_agents(cfg)
+
+
+# --------------------------------------------------------------------------
 # MODE DETECTION
 # --------------------------------------------------------------------------
 def test_per_agent_mode_detected():
