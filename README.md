@@ -1,62 +1,120 @@
-# Storage Stress — NYMEX Henry Hub Natural Gas Calendar Spreads
+# QUANTT Commodities — cross-sectional futures research
 
-A systematic strategy that trades natural gas futures calendar spreads off a
-Deliverability Stress Index (DSI) built from free public storage data. Everything
-runs today on seeded synthetic data with no API key and no broker; it switches to
-live by setting one environment variable and starting IB Gateway.
+A systematic commodity futures strategy running live on IBKR paper, built
+around an unusual constraint: **every claim has to beat a random agent before
+it counts.**
+
+The book ranks 22 commodity futures against each other on carry, momentum and
+basis-momentum, holds the top third long against the bottom third short,
+dollar-neutral, rebalanced monthly. Over 2000–2026 that earns Sharpe 0.553 at
+the 99.5th percentile of a 200-seed null distribution.
+
+## The part worth knowing first
+
+**This project retired its own first strategy.** Half of summer 2026 went into
+a natural-gas calendar-spread model driven by a Deliverability Stress Index.
+Its own pre-registered regime test falsified the hypothesis behind it — the
+volatility it needed to rise had fallen 29%, and mean reversion had gone to
+zero. Three separate bugs had been making the backtest look profitable.
+
+That code is still here. It is the evidence behind the decision, and deleting
+it would delete the proof. See `docs/SUMMER_SUMMARY.md`.
+
+The naming convention tells you which is which:
+
+| Convention | Strategy | Status |
+|---|---|---|
+| `agent_zero`, `agent_one`, `agent_dsi` | Natural gas calendar spreads | **Retired** |
+| `agent_0` … `agent_3` | Cross-sectional commodities | **Live** |
+
+## The agent ladder
+
+Four agents run on identical machinery, differing only in which factors they
+may read. `agent_0` trades at random. Each rung above sees exactly one more
+piece of information, so the gap between two adjacent rungs measures what that
+one factor contributes.
+
+| Agent | Sees | Sharpe | vs chance |
+|---|---|---|---|
+| `agent_0` | random — nothing | 0.08 | — |
+| `agent_1` | carry | 0.24 | 98th pctile |
+| `agent_2` | + momentum | 0.40 | 100th |
+| **`agent_3`** | **+ basis-momentum** | **0.553** | **99.5th** |
+
+Only `agent_3` trades live today — each agent needs its own IBKR paper
+account, and IBKR caps those at $1,000,000. See `config/xsec.yaml`.
+
+## Quick start
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev,dashboard,live]"
+
+pytest -q                          # 75 tests
+python scripts/run_xsec.py 200     # reproduces the ladder + a 200-seed null
+streamlit run dashboard/pivot_a.py # research dashboard
+```
+
+Your ladder numbers must match `docs/03_SUMMER_RESULTS.md`. If they don't,
+say so — a reproducibility gap is a finding, not a nuisance.
+
+Backtests read a historical mirror from Cloudflare R2 and need credentials in
+`.env`. **Live trading needs none of that** — signals come from IBKR itself,
+because the mirror was measured stale by 43–243 days per market.
 
 ## Layout
 
 ```
 storage-stress/
-├── pyproject.toml          # deps + packaging (pip install -e .)
-├── .env.example            # copy to .env, add keys (.env is gitignored)
-├── config/
-│   ├── settings.yaml       # pre-registered strategy parameters
-│   └── instruments.yaml    # contract specs + EIA series IDs
-├── src/storage_stress/     # the importable package
-│   ├── data/               # connectivity.py — every feed + IBKR + synthetic fallback
-│   ├── signal/             # dsi.py — the DSI pipeline (sections 4-6)
-│   ├── agents/             # agents.py, agent_zero.py — Zero/One/DSI on shared code
-│   ├── execution/          # (scaffold) IBKR order routing — build in summer wk 2-4
-│   ├── backtest/           # (scaffold) walk-forward engine — wk 5-10
-│   └── monitoring/         # (scaffold) KPI logging + alerts — wk 12
-├── notebooks/              # exploration only; import from src, never the reverse
-│   ├── 01_connectivity.ipynb
-│   ├── 02_concepts.ipynb
-│   └── scratch/            # throwaway, gitignored
-├── data/                   # all gitignored; raw is immutable, rest is regenerable
-│   ├── raw/  interim/  processed/  live/
-├── scripts/run_daily.py    # the scheduled Thursday job
-├── tests/                  # pytest; mirrors src/
-└── docs/                   # LOCKED_STRATEGY.md, SPRINT_PLANNER.md
+├── config/xsec.yaml            FROZEN live spec — changing it invalidates
+│                               the forward test from that date
+├── src/storage_stress/
+│   ├── data/                   commodities.py (factors), connectivity.py (feeds)
+│   ├── signal/dsi.py           the retired gas pipeline — still used by add_stress
+│   ├── agents/
+│   │   ├── xsec.py             LIVE: the ladder, scoring, tercile weights
+│   │   └── agents.py           RETIRED: the gas agents
+│   ├── execution/              xsec_* = live; the rest is the gas engine
+│   └── monitoring/             publish.py (public snapshot), flex.py (dormant)
+├── scripts/                    run_xsec* = live; run_agents/run_daily = retired
+├── deploy/bootstrap.sh         bare VM -> running stack, one command
+├── dashboard/
+│   ├── xsec_live.py            LIVE ledger
+│   └── pivot_a.py              RESEARCH backtest artifacts
+└── docs/                       see below
 ```
 
-## Quick start
+## Documentation
 
-```bash
-python -m venv .venv && source .venv/bin/activate     # or your env manager
-pip install -e ".[dev]"                                # editable install + dev tools
-pytest                                                 # 5 tests, all green on synthetic data
-python scripts/run_daily.py --mode research            # compute signal, log it, no orders
-
-cp .env.example .env                                   # then add your free EIA key
-#   EIA_API_KEY from https://www.eia.gov/opendata/  -> same code returns LIVE data
-
-pip install -e ".[live]"                               # ib_async, for paper trading
-#   start IB Gateway in PAPER mode, then:
-python scripts/run_daily.py --mode paper
-```
+| Document | What it covers |
+|---|---|
+| `01_TECHNICAL_INFRASTRUCTURE.md` | How the code fits together |
+| `02_PROJECT_INTRO_HIRING.md` | Roles, requirements, timeline |
+| `03_SUMMER_RESULTS.md` | What was found, with evidence |
+| `04_ONBOARDING_PACKAGE.md` | First-fortnight path, accounts, budget |
+| `DEPLOY.md` | Always-on deployment |
+| `SUMMER_SUMMARY.md` | The gas strategy and why it was retired |
+| `PIVOT_A_STRATEGY.md` | How the current strategy works |
+| `STRESS_FACTOR.md` | A factor that was tested and **rejected** |
 
 ## Conventions worth keeping
 
-- `raw/` data is never edited; everything downstream rebuilds from it. EIA prints
-  get revised, so keep the original download and reconcile in `interim/`.
-- Logic lives in `src/` (tested, reusable); notebooks only *look* at things.
-- Secrets in `.env` only — it's the first line of `.gitignore`. Tunable parameters
-  in `config/*.yaml` so the strategy changes without code edits and stays auditable.
-- `scripts/` are thin wrappers over `src/`; the scheduler stays dumb.
-- Use `ib_async`, not the proposal's `ib_insync` (unmaintained since early 2024).
+- **Nothing is a result until it beats a null distribution.** One random path
+  is an anecdote; 200 are a benchmark. A +26.3% result that looked like signal
+  turned out to be the 95th percentile of chance.
+- **Pre-commit the decision rule**, in the file, before running the test.
+  `scripts/stress_test.py` and `scripts/carry_drop_test.py` both do this, and
+  both rejected the thing they were testing.
+- **`config/*.yaml` is frozen while the forward test runs.** Changing a
+  parameter mid-test turns out-of-sample into in-sample with extra steps.
+- **Secrets live in `.env` only.** Never hardcode a key as a default value —
+  this repo once carried literal EIA and NOAA keys as fallbacks.
+- **Returns are roll-safe**: computed only between two prices of the *same*
+  contract. Splicing fabricated up to 31% of all measured movement.
+- Logic lives in `src/` and is tested; `scripts/` are thin wrappers;
+  notebooks only look at things.
 
-See `docs/LOCKED_STRATEGY.md` for the frozen strategy spec and `docs/SPRINT_PLANNER.md`
-for the 12-week build plan.
+---
+
+*Paper trading throughout. Backtest figures are simulated; forward figures
+come from the live IBKR paper ledger. No capital is at risk.*

@@ -312,7 +312,7 @@ determines coverage:
 | `carry_drop_test.py` | Pre-committed single-shot factor test |
 | `run_xsec_live.py` | `--job rebalance \| mark \| status`, `--dry-run` |
 | `xsec_scheduler.py` | Always-on scheduler |
-| `setup_xsec_autostart.ps1` | Install Startup shortcuts (Windows) |
+| `deploy/bootstrap.sh` | Bare VM -> running stack, one command |
 | `flatten_account.py` | Close all positions (paper-only, `--confirm`) |
 | `regime_test.py` | Legacy: the NG week-1 gate |
 | `compare_instruments.py` | Legacy: 4 agents × 3 NG instruments |
