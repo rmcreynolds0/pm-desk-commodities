@@ -315,21 +315,21 @@ fi
 # Publishes the equity curve, positions and decisions to R2 so the book can be
 # followed WITHOUT the trading login. This is what replaced the Flex plan:
 # Flex tokens only read funded live accounts, never paper.
-if grep -q '^R2_ACCESS_KEY_ID=.' .env 2>/dev/null && \
-   grep -q '^R2_BUCKET=.' .env 2>/dev/null ; then
+if grep -q '^GITHUB_TOKEN=.' .env 2>/dev/null && \
+   grep -q '^GIST_ID=.' .env 2>/dev/null ; then
   if ! crontab -l 2>/dev/null | grep -q 'publish_status.py' ; then
     say "installing status publisher at 17:00 ET (after the 16:30 mark)"
     PUB_LINE="0 17 * * 1-5 cd $REPO_DIR && docker compose exec -T engine python scripts/publish_status.py >> data/live/logs/publish.log 2>&1"
     { crontab -l 2>/dev/null; echo "$PUB_LINE"; } | crontab -
-    ok "status publisher cron installed"
+    ok "status publisher cron installed (gist)"
   else
     ok "status publisher cron already present"
   fi
   warn "RUN IT ONCE WITH --dry-run BEFORE TRUSTING IT:"
   warn "  docker compose exec engine python scripts/publish_status.py --dry-run"
-  warn "A published key cannot be recalled."
+  warn "Published content cannot be recalled."
 else
-  warn "R2 credentials not in .env — no public status snapshot will be"
+  warn "GITHUB_TOKEN / GIST_ID not in .env — no public status snapshot will be"
   warn "published. The book still trades and the dashboard still works; only"
   warn "external tracking is unavailable. See .env.example."
 fi

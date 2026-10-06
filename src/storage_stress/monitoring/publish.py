@@ -215,6 +215,67 @@ def upload_r2(body: str, key: str, content_type: str = "application/json",
     return key
 
 
+def upload_gist(body: str, filename: str = "status.json",
+                env: dict[str, str] | None = None) -> str:
+    """Update a GitHub gist with the snapshot. Returns the public raw URL.
+
+    WHY A GIST RATHER THAN R2 OR THE REPO
+        R2 needs Cloudflare admin access to make a bucket readable, and the
+        bucket here belongs to the club rather than to us. A gist needs
+        nothing but a GitHub account we already have.
+
+        A SECRET gist is the right shape for this. Its URL is unguessable but
+        requires NO authentication to read, so it can be handed to someone who
+        has no GitHub account — which is exactly "share a URL, not a
+        credential". It is not listed on a profile and is not searchable.
+
+        Note "secret" means unlisted, not private: anyone WITH the link can
+        read it. That is the intent, and it is why build_payload excludes
+        anything identifying the account.
+
+        It also versions for free — gists keep full revision history, so the
+        record cannot be silently rewritten.
+
+    The token needs only the `gist` scope. Nothing else. A fine-grained token
+    scoped to gists cannot touch the repository or any other resource, so the
+    blast radius if it leaks is one JSON file of paper-trading results.
+    """
+    import os
+
+    import requests
+
+    env = env or dict(os.environ)
+    token = env.get("GITHUB_TOKEN", "")
+    gist_id = env.get("GIST_ID", "")
+    if not token or not gist_id:
+        raise RuntimeError(
+            "missing GITHUB_TOKEN and/or GIST_ID — create a secret gist and a "
+            "token with the 'gist' scope, then put both in .env")
+
+    r = requests.patch(
+        f"https://api.github.com/gists/{gist_id}",
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28"},
+        json={"files": {filename: {"content": body}}},
+        timeout=30,
+    )
+    if r.status_code == 404:
+        raise RuntimeError(
+            f"gist {gist_id} not found. Either the id is wrong or the token "
+            f"lacks the 'gist' scope — GitHub returns 404 rather than 403 for "
+            f"a scope it will not admit to.")
+    r.raise_for_status()
+
+    data = r.json()
+    files = data.get("files", {})
+    # raw_url carries a revision hash and so pins THAT version. Strip it to
+    # the stable form, which always serves the newest content.
+    owner = (data.get("owner") or {}).get("login", "")
+    return (f"https://gist.githubusercontent.com/{owner}/{gist_id}"
+            f"/raw/{filename}")
+
+
 def write_local(payload: dict, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

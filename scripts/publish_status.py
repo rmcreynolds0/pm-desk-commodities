@@ -48,12 +48,17 @@ LATEST_KEY = "status/latest.json"
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--target", choices=["gist", "r2"], default="gist",
+                    help="where to publish. 'gist' (default) needs only a "
+                         "GitHub token you control. 'r2' needs write access "
+                         "to the bucket AND an administrator willing to serve "
+                         "it publicly — not an option on a shared club bucket.")
     ap.add_argument("--dry-run", action="store_true",
                     help="build and print the payload; upload nothing")
     ap.add_argument("--out", metavar="PATH",
                     help="also write the payload to this local file")
     ap.add_argument("--no-history", action="store_true",
-                    help="overwrite latest.json only, keep no dated copy")
+                    help="r2 only: overwrite latest.json, keep no dated copy")
     args = ap.parse_args()
 
     with open(ROOT / "config" / "xsec.yaml") as f:
@@ -91,15 +96,21 @@ def main() -> int:
         return 0
 
     try:
-        P.upload_r2(body, LATEST_KEY)
-        print(f"  uploaded -> {LATEST_KEY}")
-        if not args.no_history:
-            stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-            hist = f"status/history/{stamp}.json"
-            P.upload_r2(body, hist)
-            print(f"  archived -> {hist}")
+        if args.target == "gist":
+            url = P.upload_gist(body)
+            print(f"  published -> {url}")
+            print("  (gist revision history keeps every prior snapshot)")
+        else:
+            P.upload_r2(body, LATEST_KEY)
+            print(f"  uploaded -> {LATEST_KEY}")
+            if not args.no_history:
+                stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+                hist = f"status/history/{stamp}.json"
+                P.upload_r2(body, hist)
+                print(f"  archived -> {hist}")
     except Exception as e:                                   # noqa: BLE001
-        print(f"[ERROR] upload failed: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"[ERROR] publish failed: {type(e).__name__}: {e}",
+              file=sys.stderr)
         return 1
 
     return 0
