@@ -13,6 +13,11 @@ dependencies = [
     "duckdb",
     "pyyaml",
     "python-dotenv",
+    # S3 client for Cloudflare R2. Used to publish the public status snapshot
+    # (monitoring/publish.py) and nothing else. R2 is S3-compatible; boto3
+    # rather than hand-rolled SigV4 because a subtly wrong request signature
+    # fails in ways indistinguishable from a permissions problem.
+    "boto3",
 ]
 
 [project.optional-dependencies]

@@ -305,9 +305,33 @@ if grep -q '^FLEX_TOKEN=.' .env 2>/dev/null && \
     ok "flex reconciliation cron already present"
   fi
 else
-  warn "FLEX_TOKEN / FLEX_QUERY_ID not in .env — skipping the reconciliation"
-  warn "cron. The book will still trade, but nothing will independently check"
-  warn "the ledger against the broker. See .env.example to set it up."
+  # Expected on a paper-only setup: IBKR issues Flex tokens against funded
+  # LIVE accounts and they cannot read a paper account at all. The public
+  # status snapshot below covers external tracking instead.
+  ok "no Flex credentials — skipping reconciliation (expected on paper)"
+fi
+
+# --- 9c. PUBLIC STATUS SNAPSHOT ----------------------------------------------
+# Publishes the equity curve, positions and decisions to R2 so the book can be
+# followed WITHOUT the trading login. This is what replaced the Flex plan:
+# Flex tokens only read funded live accounts, never paper.
+if grep -q '^R2_ACCESS_KEY_ID=.' .env 2>/dev/null && \
+   grep -q '^R2_BUCKET=.' .env 2>/dev/null ; then
+  if ! crontab -l 2>/dev/null | grep -q 'publish_status.py' ; then
+    say "installing status publisher at 17:00 ET (after the 16:30 mark)"
+    PUB_LINE="0 17 * * 1-5 cd $REPO_DIR && docker compose exec -T engine python scripts/publish_status.py >> data/live/logs/publish.log 2>&1"
+    { crontab -l 2>/dev/null; echo "$PUB_LINE"; } | crontab -
+    ok "status publisher cron installed"
+  else
+    ok "status publisher cron already present"
+  fi
+  warn "RUN IT ONCE WITH --dry-run BEFORE TRUSTING IT:"
+  warn "  docker compose exec engine python scripts/publish_status.py --dry-run"
+  warn "A published key cannot be recalled."
+else
+  warn "R2 credentials not in .env — no public status snapshot will be"
+  warn "published. The book still trades and the dashboard still works; only"
+  warn "external tracking is unavailable. See .env.example."
 fi
 
 # --- 10. REPORT --------------------------------------------------------------

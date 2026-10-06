@@ -149,10 +149,20 @@ services:
       IBKR_PORT_AGENT_3: "4002"
       TZ: America/New_York               # scheduler compares against ET
       PYTHONUNBUFFERED: "1"
-      # NOTE: no EIA/NOAA/FRED/R2 keys. The cross-sectional strategy takes its
-      # signals from IBKR itself (both legs of the term structure plus a year
+      # NOTE: no EIA/NOAA/FRED keys. The cross-sectional strategy takes its
+      # SIGNALS from IBKR itself (both legs of the term structure plus a year
       # of bars). The R2 mirror was measured stale by 43-243 days per market,
-      # so this stack has NO external data dependency at all.
+      # so nothing in the trading path depends on an external feed.
+      #
+      # R2 below is for OUTPUT ONLY — scripts/publish_status.py writes the
+      # public status snapshot there. Nothing reads from it, so a broken or
+      # missing R2 credential cannot affect a trading decision; publishing
+      # just fails and says so. Empty defaults keep the stack starting when
+      # the snapshot is not configured.
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
     volumes:
       - ./data:/app/data                 # ledger + logs persist on the host
       - ./config:/app/config             # edit schedule/params without rebuild
