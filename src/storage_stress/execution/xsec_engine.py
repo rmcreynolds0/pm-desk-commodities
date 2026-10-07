@@ -163,22 +163,48 @@ def endpoint_for(cfg: dict, agent: str | None) -> tuple[str, int]:
     return host, port
 
 
-def connect_ib(cfg: dict, agent: str | None = None):
+def client_id_for(cfg: dict, agent: str | None) -> int:
+    """A DISTINCT IBKR client id per concurrent connection.
+
+    IBKR allows each client id exactly once per gateway; a second connection
+    reusing one is rejected with "Error 326: client id is already in use".
+
+    A rebalance holds TWO connections open at the same time -- the signal
+    connection that resolves contracts and builds the factor panel, plus the
+    agent's execution connection -- and in per-agent mode the signal
+    connection borrows the first agent's gateway, so both land on the same
+    one. Sharing an id there is guaranteed to collide.
+
+    So: the configured id is the signal connection, and each agent gets
+    base + 1 + its position in the ladder. Derived from ladder position rather
+    than assigned on the fly so the id for a given agent is stable across runs
+    -- an id that moves makes IBKR's own connection logs impossible to follow.
+    """
+    base = int(cfg["ibkr"]["client_id"])
+    if agent is None:
+        return base
+    agents = list(cfg["signal"]["agents"])
+    return base + 1 + (agents.index(agent) if agent in agents else 0)
+
+
+def connect_ib(cfg: dict, agent: str | None = None,
+               client_id: int | None = None):
     """Connect to an IB Gateway with retries (gateways restart nightly).
 
     `agent` selects that agent's own gateway when running in per-agent-account
-    mode; None uses the shared endpoint.
+    mode; None uses the shared endpoint. `client_id` overrides the derived id,
+    which the signal connection uses to stay on the base id.
     """
     from ib_async import IB
     import time
     ib_cfg = cfg["ibkr"]
     host, port = endpoint_for(cfg, agent)
+    cid = client_id if client_id is not None else client_id_for(cfg, agent)
     last = None
     for attempt in range(1, ib_cfg["connect_retries"] + 1):
         try:
             ib = IB()
-            ib.connect(host, port,
-                       clientId=ib_cfg["client_id"],
+            ib.connect(host, port, clientId=cid,
                        timeout=ib_cfg["connect_timeout_s"])
             ib.reqMarketDataType(ib_cfg["market_data_type"])
             return ib
@@ -186,8 +212,8 @@ def connect_ib(cfg: dict, agent: str | None = None):
             last = e
             time.sleep(5 * attempt)
     raise ConnectionError(
-        f"IB Gateway unreachable at {host}:{port}"
-        + (f" (for {agent})" if agent else "") + f": {last}")
+        f"IB Gateway unreachable at {host}:{port} (clientId {cid})"
+        + (f" for {agent}" if agent else "") + f": {last}")
 
 
 # --------------------------------------------------------------------------
@@ -382,7 +408,12 @@ def run_rebalance(root: Path, dry_run: bool = False,
     # In per-agent mode this borrows the first RUNNING agent's gateway: the
     # others' gateways may not exist yet when a subset is being launched.
     ib_exec = None          # per-agent connection, cleaned up in finally
-    ib = connect_ib(cfg, agent_names[0] if solo else None)
+    # Pin the SIGNAL connection to the base client id. It borrows the first
+    # agent's gateway, so letting it derive an id would hand it the same one
+    # that agent's execution connection is about to claim -- IBKR rejects the
+    # second with "Error 326: client id is already in use".
+    ib = connect_ib(cfg, agent_names[0] if solo else None,
+                    client_id=int(cfg["ibkr"]["client_id"]))
     try:
         res = UniverseResolver(ib, cfg["universe"])
 

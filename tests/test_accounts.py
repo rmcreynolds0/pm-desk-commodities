@@ -208,3 +208,35 @@ def test_shakedown_book_matches_measured_shared_figure():
     cfg["capital"]["book_size"] = 10_000_000      # ceiling well above capacity
     assert E.size_book(cfg, 1_000_000, 4, "shakedown") == pytest.approx(
         520_833, rel=1e-3)
+
+
+# --------------------------------------------------------------------------
+# CLIENT IDS — IBKR allows each id once per gateway
+# --------------------------------------------------------------------------
+def test_signal_and_exec_ids_never_collide():
+    """A rebalance holds the signal connection AND an execution connection
+    open at once, and in per-agent mode both land on the same gateway. Sharing
+    an id there is rejected with 'Error 326: client id is already in use',
+    which is exactly what happened on the first live attempt."""
+    cfg = base_cfg()
+    ids = [E.client_id_for(cfg, None)]
+    ids += [E.client_id_for(cfg, a) for a in cfg["signal"]["agents"]]
+    assert len(ids) == len(set(ids)), f"colliding client ids: {ids}"
+
+
+def test_signal_connection_keeps_the_configured_id():
+    assert E.client_id_for(base_cfg(), None) == 30
+
+
+def test_ids_are_stable_across_runs():
+    """Derived from ladder position, not assigned on the fly — an id that
+    moves between runs makes IBKR's own connection logs unreadable."""
+    cfg = base_cfg()
+    assert E.client_id_for(cfg, "agent_3") == E.client_id_for(cfg, "agent_3")
+    assert E.client_id_for(cfg, "agent_0") == 31
+    assert E.client_id_for(cfg, "agent_3") == 34
+
+
+def test_unknown_agent_does_not_collide_with_the_signal_id():
+    """Even an agent missing from the ladder must not be handed the base id."""
+    assert E.client_id_for(base_cfg(), "agent_9") != 30
