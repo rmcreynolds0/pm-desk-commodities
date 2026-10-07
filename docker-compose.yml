@@ -174,6 +174,14 @@ services:
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
       R2_BUCKET: ${R2_BUCKET:-}
+      # Gist publishing — the default target for the public status snapshot.
+      # These MUST be listed here: compose reads .env for its own variable
+      # substitution, but that does NOT put the values inside the container.
+      # Without these two lines publish_status.py builds the payload happily
+      # and then fails at the upload with "missing GITHUB_TOKEN and/or
+      # GIST_ID", which reads like a .env problem and is not one.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIST_ID: ${GIST_ID:-}
     volumes:
       - ./data:/app/data                 # ledger + logs persist on the host
       - ./config:/app/config             # edit schedule/params without rebuild
