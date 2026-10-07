@@ -203,8 +203,22 @@ if command -v ufw >/dev/null 2>&1 ; then
   ufw --force default deny incoming  >/dev/null
   ufw --force default allow outgoing >/dev/null
   ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
-  ufw deny 4002/tcp >/dev/null
-  ufw deny 8501/tcp >/dev/null
+  # DO NOT add `ufw deny` rules for 4002 / 8501.
+  #
+  # An earlier version did, as "defence in depth". It broke the stack: ufw
+  # rules apply to the FORWARD chain, which is exactly the path that
+  # container-to-container traffic takes across the Docker bridge. The engine's
+  # packets to ib-gateway-0:4002 were silently DROPPED by our own firewall.
+  #
+  # The failure was nasty to diagnose because the gateway healthcheck still
+  # passed -- it runs INSIDE the gateway container over loopback, which never
+  # touches the firewall. So the stack reported healthy while the engine timed
+  # out, and a timeout (dropped) rather than a refusal (nothing listening) was
+  # the only clue that a firewall was involved.
+  #
+  # Those rules protected nothing anyway: docker-compose binds both ports to
+  # 127.0.0.1, so neither is reachable from outside this host to begin with.
+  # The default-deny-incoming policy above is what actually closes the box.
   ufw --force enable >/dev/null
   ok "ufw active — SSH only; 4002 and 8501 reachable through an SSH tunnel only"
 else
