@@ -40,9 +40,20 @@ x-gateway: &gateway
   restart: unless-stopped
   env_file: .env
   healthcheck:
-    # The API port only accepts once IBC has completed login. This is the
-    # difference between "container up" and "actually usable".
-    test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/4002' || exit 1"]
+    # TEST 4004, NOT 4002.
+    #
+    # IB Gateway binds 4002 but honours the API handshake only from 127.0.0.1,
+    # so a connection from another container completes at the TCP layer and
+    # then hangs. The image runs socat on 4004 forwarding to 127.0.0.1:4002,
+    # which is the only port another container can actually use.
+    #
+    # The first version of this check tested 127.0.0.1:4002 from inside the
+    # container. That passes the instant the gateway binds, so compose reported
+    # the service HEALTHY while the engine timed out against it -- the check
+    # validated a path nothing uses. A healthcheck that passes while the thing
+    # it guards is unreachable is worse than none, because it sends you looking
+    # somewhere else. Test the route the engine actually takes.
+    test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/4004' || exit 1"]
     interval: 30s
     timeout: 5s
     retries: 10
@@ -66,7 +77,7 @@ services:
       <<: *gateway-env
       TWS_USERID: ${TWS_USERID_0:?set TWS_USERID_0 in .env}
       TWS_PASSWORD: ${TWS_PASSWORD_0:?set TWS_PASSWORD_0 in .env}
-    ports: ["127.0.0.1:4002:4002"]
+    ports: ["127.0.0.1:4002:4004"]   # host 4002 -> socat 4004 (gateway is loopback-only on 4002)
 
   # GATEWAYS 1-3 ARE PROFILE-GATED.
   # IBKR paper accounts take a day or two to open, so the stack must be able to
@@ -85,7 +96,7 @@ services:
       <<: *gateway-env
       TWS_USERID: ${TWS_USERID_1:-}
       TWS_PASSWORD: ${TWS_PASSWORD_1:-}
-    ports: ["127.0.0.1:4012:4002"]
+    ports: ["127.0.0.1:4012:4004"]
 
   ib-gateway-2:
     <<: *gateway
@@ -94,7 +105,7 @@ services:
       <<: *gateway-env
       TWS_USERID: ${TWS_USERID_2:-}
       TWS_PASSWORD: ${TWS_PASSWORD_2:-}
-    ports: ["127.0.0.1:4022:4002"]
+    ports: ["127.0.0.1:4022:4004"]
 
   ib-gateway-3:
     <<: *gateway
@@ -103,7 +114,7 @@ services:
       <<: *gateway-env
       TWS_USERID: ${TWS_USERID_3:-}
       TWS_PASSWORD: ${TWS_PASSWORD_3:-}
-    ports: ["127.0.0.1:4032:4002"]
+    ports: ["127.0.0.1:4032:4004"]
 
   engine:
     build: .
@@ -143,10 +154,10 @@ services:
       IBKR_HOST_AGENT_0: ib-gateway-1      # when account 2 opens
       IBKR_HOST_AGENT_1: ib-gateway-2      # when account 3 opens
       IBKR_HOST_AGENT_2: ib-gateway-3      # when account 4 opens
-      IBKR_PORT_AGENT_0: "4002"
-      IBKR_PORT_AGENT_1: "4002"
-      IBKR_PORT_AGENT_2: "4002"
-      IBKR_PORT_AGENT_3: "4002"
+      IBKR_PORT_AGENT_0: "4004"
+      IBKR_PORT_AGENT_1: "4004"
+      IBKR_PORT_AGENT_2: "4004"
+      IBKR_PORT_AGENT_3: "4004"
       TZ: America/New_York               # scheduler compares against ET
       PYTHONUNBUFFERED: "1"
       # NOTE: no EIA/NOAA/FRED keys. The cross-sectional strategy takes its
