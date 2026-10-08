@@ -180,8 +180,6 @@ services:
       # Without these two lines publish_status.py builds the payload happily
       # and then fails at the upload with "missing GITHUB_TOKEN and/or
       # GIST_ID", which reads like a .env problem and is not one.
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GIST_ID: ${GIST_ID:-}
       # Flex Web Service — IBKR's own record of what filled, used by
       # scripts/flex_pull.py to reconcile against our ledger. Read-only: a
       # Flex token cannot place an order or change the account.
