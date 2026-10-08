@@ -182,6 +182,17 @@ services:
       # GIST_ID", which reads like a .env problem and is not one.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GIST_ID: ${GIST_ID:-}
+      # Flex Web Service — IBKR's own record of what filled, used by
+      # scripts/flex_pull.py to reconcile against our ledger. Read-only: a
+      # Flex token cannot place an order or change the account.
+      #
+      # Worth having because the ledger is written by the same code that sends
+      # the orders, so if that code is wrong about a fill the ledger is wrong
+      # in the way hardest to notice — everything downstream stays internally
+      # consistent and is simply false. This project has already recorded 54
+      # positions the broker never held.
+      FLEX_TOKEN: ${FLEX_TOKEN:-}
+      FLEX_QUERY_ID: ${FLEX_QUERY_ID:-}
     volumes:
       - ./data:/app/data                 # ledger + logs persist on the host
       - ./config:/app/config             # edit schedule/params without rebuild
