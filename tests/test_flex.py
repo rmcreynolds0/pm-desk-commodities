@@ -16,7 +16,6 @@ import pytest
 from storage_stress.monitoring import flex
 
 
-# --- fixtures mimicking real Flex responses --------------------------------
 SEND_OK = """<FlexStatementResponse timestamp='01 January, 2026'>
   <Status>Success</Status>
   <ReferenceCode>1234567890</ReferenceCode>
@@ -59,7 +58,6 @@ STATEMENT = """<FlexQueryResponse queryName="xsec" type="AF">
 </FlexQueryResponse>"""
 
 
-# --- error handling --------------------------------------------------------
 def test_failure_inside_a_200_is_still_a_failure():
     """Flex signals errors in the BODY with HTTP 200. Reading only the status
     code would treat a bad token as a successful empty statement — which would
@@ -90,11 +88,10 @@ def test_in_progress_is_classified_retryable():
     assert e.value.code in flex.RETRYABLE
 
 
-# --- statement parsing -----------------------------------------------------
 def test_parses_account_nav_positions_trades():
     snap = flex.parse_statement(STATEMENT)
     assert snap.account_id == "DU1234567"
-    assert snap.nav == pytest.approx(1002345.67)     # LAST dated row, not first
+    assert snap.nav == pytest.approx(1002345.67)
     assert len(snap.positions) == 3
     assert len(snap.trades) == 1
 
@@ -119,7 +116,6 @@ def test_shorts_stay_negative():
     assert snap.net_by_symbol()["GC"] == -1.0
 
 
-# --- reconciliation --------------------------------------------------------
 def test_agreement():
     snap = flex.parse_statement(STATEMENT)
     rec = flex.reconcile(snap, {"CL": 3, "GC": -1})

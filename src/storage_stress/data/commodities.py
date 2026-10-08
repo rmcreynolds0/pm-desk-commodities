@@ -29,6 +29,22 @@ TWO CORRECTNESS RULES CARRIED OVER FROM THE NG WORK -- both were real bugs:
      the SAME contract. Splicing contracts and differencing the result
      fabricates P&L (measured at 6-14x a normal daily move on NG data).
   2. COSTS ARE CHARGED. Turnover is costed explicitly; see the simulator.
+TRAPS
+-----
+RETURNS ARE ROLL-SAFE AND MUST STAY THAT WAY. A daily return is computed only
+between two prices of the SAME futcode. Differencing across a contract change
+fabricates the roll gap as P&L -- on the gas spreads that accounted for up to
+31% of all measured price movement. add_factors builds returns per contract
+and then reads off whichever is front or second, never differencing a spliced
+series.
+
+CARRY MUST BE ANNUALISED. Dividing the log slope by dt_years is not cosmetic:
+markets have different listing cycles, so a one-month and a three-month spread
+are not comparable until normalised.
+
+add_stress PORTS THE RETIRED GAS METHOD AND WAS REJECTED. It is kept because
+scripts/stress_test.py uses it as the evidence behind that rejection; it is not
+in the live blend. See docs/STRESS_FACTOR.md.
 """
 from __future__ import annotations
 
@@ -39,50 +55,27 @@ import pandas as pd
 
 R2_FUTURES_SCHEMA = "tr_ds_fut"
 
-# A standard, liquid, long-history commodity universe spanning the four
-# classic sectors. Deliberately EXCLUDES mini contracts (QG/QM/QU/QH/QC),
-# swaps, crack spreads and basis swaps -- those are derivative of the
-# underlying markets and would double-count exposure in a cross-sectional sort.
-#
-# 22 markets. A 17-market variant was tested on 2026-08-12 (dropping GC, HO, GF,
-# HG, PA to fit a constrained paper account) and REJECTED on measurement, not
-# preference: carry stopped beating chance (Sharpe 0.24 -> 0.12, from the 98th
-# to the 88th percentile of the null) and max drawdown worsened from -36% to
-# -53% as terciles thinned from ~7 to ~6 names per side. The dropped metals were
-# carrying a disproportionate share of the carry signal.
-#
-# Universe size is therefore a STRATEGY parameter, not an operational
-# convenience: the account is sized to the universe, never the reverse.
 COMMODITY_UNIVERSE = {
-    # --- energy -----------------------------------------------------------
     "CL": "Crude Oil (WTI)",
     "NG": "Natural Gas",
     "HO": "Heating Oil",
     "RB": "Gasoline RBOB",
-    # --- metals -----------------------------------------------------------
     "GC": "Gold",
     "SI": "Silver",
     "HG": "Copper",
     "PL": "Platinum",
     "PA": "Palladium",
-    # --- grains / oilseeds -------------------------------------------------
     "ZC": "Corn",
     "ZS": "Soybeans",
     "ZM": "Soybean Meal",
     "ZL": "Soybean Oil",
     "ZO": "Oats",
     "KE": "Wheat (Hard Red Winter)",
-    # MWE (Minneapolis wheat) removed 2026-08-12: it does not resolve on IBKR
-    # (MGEX absorbed by MIAX; no CBOT security definition), so it cannot be
-    # traded live. Dropped from the RESEARCH universe too, so the backtest and
-    # the live book measure the same 22 markets.
-    # --- softs -------------------------------------------------------------
     "CC": "Cocoa",
     "KC": "Coffee",
     "SB": "Sugar",
     "CT": "Cotton",
     "OJ": "Orange Juice",
-    # --- livestock ---------------------------------------------------------
     "LE": "Live Cattle",
     "GF": "Feeder Cattle",
 }
@@ -125,7 +118,6 @@ def load_chain(con, tickers: list[str] | None = None) -> pd.DataFrame:
     df["delivery"] = [pd.Timestamp(year=p[0], month=p[1], day=1)
                       for p in parsed[keep]]
     df["lasttrddate"] = pd.to_datetime(df["lasttrddate"])
-    # One row per (ticker, delivery); keep the later-expiring listing.
     df = (df.sort_values("lasttrddate")
             .drop_duplicates(subset=["ticker", "delivery"], keep="last")
             .reset_index(drop=True))
@@ -155,11 +147,9 @@ def build_panel(px: pd.DataFrame, guard_days: int = 5) -> pd.DataFrame:
     uses. 'Second' = the next delivery month after the front.
     """
     px = px.sort_values(["ticker", "date", "delivery"])
-    # Days until expiry; contracts inside the guard are not tradeable.
     px["dte"] = (px["lasttrddate"] - px["date"]).dt.days
     live = px[px["dte"] > guard_days]
 
-    # Rank contracts by delivery within each (ticker, date): 0 = front, 1 = 2nd.
     live = live.copy()
     live["rank"] = live.groupby(["ticker", "date"])["delivery"].rank(
         method="first").astype(int) - 1
@@ -174,8 +164,6 @@ def build_panel(px: pd.DataFrame, guard_days: int = 5) -> pd.DataFrame:
         "second_code": wide[("futcode", 1)],
     }).reset_index()
 
-    # Time between the two delivery months, in years -- carry must be
-    # annualised or commodities with different listing cycles aren't comparable.
     deliv = near.pivot_table(index=["date", "ticker"], columns="rank",
                              values="delivery", aggfunc="first")
     out["dt_years"] = ((deliv[1] - deliv[0]).dt.days / 365.25).values
@@ -191,7 +179,6 @@ def add_factors(panel: pd.DataFrame, px: pd.DataFrame,
     then read off whichever contract is front (or second) on each date -- never
     differencing across a contract change.
     """
-    # --- per-contract daily returns ---------------------------------------
     px = px.sort_values(["futcode", "date"])
     px["ret"] = px.groupby("futcode")["settlement"].pct_change()
 
@@ -204,22 +191,15 @@ def add_factors(panel: pd.DataFrame, px: pd.DataFrame,
     panel["front_ret"] = ret_front.reindex(idx_front).values
     panel["second_ret"] = ret_front.reindex(idx_second).values
 
-    # --- CARRY: annualised log slope of the curve -------------------------
-    # Positive => backwardation (front above deferred) => positive expected
-    # roll return. This is the classic basis signal.
     panel["carry"] = (np.log(panel["front_px"] / panel["second_px"])
                       / panel["dt_years"])
 
-    # --- MOMENTUM: trailing compounded front return -----------------------
-    # Built from roll-safe daily returns, so no splicing artifacts.
-    win = int(mom_months * 21)          # ~21 trading days per month
+    win = int(mom_months * 21)
     panel = panel.sort_values(["ticker", "date"])
     g = panel.groupby("ticker", group_keys=False)
     panel["mom"] = g["front_ret"].apply(
         lambda s: (1 + s.fillna(0)).rolling(win, min_periods=win // 2).apply(
             np.prod, raw=True) - 1)
-    # --- BASIS-MOMENTUM (Boons & Prado): front momentum minus second's ----
-    # Captures movement of the CURVE, distinct from level momentum or carry.
     panel["mom_second"] = g["second_ret"].apply(
         lambda s: (1 + s.fillna(0)).rolling(win, min_periods=win // 2).apply(
             np.prod, raw=True) - 1)
@@ -227,9 +207,6 @@ def add_factors(panel: pd.DataFrame, px: pd.DataFrame,
     return panel
 
 
-# ---------------------------------------------------------------------------
-# STRESS — the natural-gas DSI method, generalised to the cross-section.
-# ---------------------------------------------------------------------------
 def add_stress(panel: pd.DataFrame, k: float = 4.0, span_days: int = 15,
                scale_window: int = 756, resid_window: int = 756,
                scale_q: float = 0.90) -> pd.DataFrame:
@@ -298,36 +275,21 @@ def add_stress(panel: pd.DataFrame, k: float = 4.0, span_days: int = 15,
     panel = panel.sort_values(["ticker", "date"]).copy()
     g = panel.groupby("ticker", group_keys=False)
 
-    # --- step 1: curve-state extremity, bounded and signed -----------------
-    # Trailing scale is the 90th percentile of |carry| over ~3 years. min_periods
-    # keeps early history usable rather than discarding the first 3 years.
     scale = g["carry"].apply(
         lambda s: s.abs().rolling(scale_window, min_periods=252).quantile(scale_q))
-    # Guard the divide: a market whose carry has been flat for 3 years has a
-    # near-zero scale, which would send u to infinity on the first real move.
     scale = scale.where(scale > 1e-8)
     panel["_u"] = (panel["carry"] / scale).clip(-1.2, 1.2)
 
-    # --- step 2: convex transform (same k as the gas strategy) -------------
     panel["_g"] = convex_stress(panel["_u"], k=k)
 
-    # --- step 3: causal smoothing ------------------------------------------
     panel["_g_sm"] = g["_g"].apply(
         lambda s: s.ewm(span=span_days, adjust=False).mean())
 
-    # --- step 4: remove the seasonality the market already prices ----------
     panel["_woy"] = panel["date"].dt.isocalendar().week.astype(int).values
-    # Expanding mean WITHIN each (ticker, week-of-year), shifted one occurrence
-    # so this year's value is excluded from its own baseline.
     seasonal = panel.groupby(["ticker", "_woy"], group_keys=False)["_g_sm"].apply(
         lambda s: s.expanding().mean().shift(1))
     panel["_g_des"] = panel["_g_sm"] - seasonal.reindex(panel.index).fillna(0.0)
 
-    # --- step 5: strip the part carry already explains ---------------------
-    # Rolling univariate OLS, vectorised:
-    #     beta  = cov(stress, carry) / var(carry)
-    #     alpha = mean(stress) - beta * mean(carry)
-    #     resid = stress - (alpha + beta * carry)
     def _residualize(df: pd.DataFrame) -> pd.Series:
         y, x = df["_g_des"], df["carry"]
         cov = y.rolling(resid_window, min_periods=252).cov(x)
@@ -336,8 +298,6 @@ def add_stress(panel: pd.DataFrame, k: float = 4.0, span_days: int = 15,
         alpha = (y.rolling(resid_window, min_periods=252).mean()
                  - beta * x.rolling(resid_window, min_periods=252).mean())
         fitted = alpha + beta * x
-        # Before enough history exists to fit, fall back to the unresidualized
-        # value -- the same choice the gas version made.
         return y - fitted.fillna(0.0)
 
     panel["stress"] = panel.groupby("ticker", group_keys=False).apply(_residualize)

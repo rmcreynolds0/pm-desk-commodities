@@ -24,6 +24,28 @@ Jobs run as SUBPROCESSES: a crash (bad data, gateway restart) kills that job,
 not the scheduler, and the next slot still fires. All jobs are idempotent.
 
 Run:  python scripts/xsec_scheduler.py
+TRAPS
+-----
+THE LAUNCH IS SELF-HEALING AND MUST STAY THAT WAY. The original fired on one
+exact date and minute. The machine was asleep for that minute, the window
+passed, nothing retried, and the book sat empty for days while the mark job
+dutifully recorded zeros. Now ANY weekday at rebalance_time with an unlaunched
+agent triggers it: missing a slot costs a day, not the experiment.
+
+PENDING IS KEYED ON `decisions`, NOT `positions`. An agent that rebalanced but
+legitimately holds nothing still has decision rows; keying on positions would
+re-flatten and relaunch a flat agent every single day.
+
+IT IS PER AGENT, NOT PER LEDGER. With one paper account per agent, agent_3 can
+be live for days before another account exists. A whole-ledger "is it empty"
+check sees "not empty" and silently never launches the rest.
+
+A FAILED FLATTEN MUST ABORT THE LAUNCH. Launching onto a book we failed to
+clear inherits positions the ledger does not know about, making every later
+mark fiction.
+
+JOBS RUN AS SUBPROCESSES and the loop catches everything: a bad yaml edit or a
+gateway outage must not kill the scheduler.
 """
 from __future__ import annotations
 
@@ -72,9 +94,6 @@ def agents_needing_launch(cfg: dict) -> list[str]:
         started = {r[0] for r in
                    con.execute("SELECT DISTINCT agent FROM decisions")}
         con.close()
-        # live_agents, not signal.agents: a rung defined for the research
-        # ladder but with no paper account yet must not be "pending launch"
-        # forever, or every scheduler tick reports work it cannot do.
         from storage_stress.execution.xsec_engine import live_agents
         return [a for a in live_agents(cfg) if a not in started]
     except Exception as e:                           # noqa: BLE001
@@ -86,7 +105,7 @@ def agents_needing_launch(cfg: dict) -> list[str]:
 def is_last_business_day(d: dt.date) -> bool:
     last = calendar.monthrange(d.year, d.month)[1]
     cur = dt.date(d.year, d.month, last)
-    while cur.weekday() > 4:          # walk back over the weekend
+    while cur.weekday() > 4:
         cur -= dt.timedelta(days=1)
     return d == cur
 
@@ -127,21 +146,6 @@ def main() -> None:
             hhmm = now.strftime("%H:%M")
             minute_key = now.strftime("%Y-%m-%d %H:%M")
 
-            # ---- REBALANCE ------------------------------------------------
-            # SELF-HEALING LAUNCH. The original design fired the first
-            # rebalance on one exact date+minute. The machine was asleep at
-            # that minute, the window passed, and it never retried -- so the
-            # book sat empty for days while the mark job dutifully recorded
-            # zeros. A one-shot trigger that cannot recover is a bug.
-            #
-            # Now: once we are on or past `first_run_date`, ANY weekday at
-            # rebalance_time launches whichever agents have NOT yet traded.
-            # Missing a day costs a day, not the whole experiment.
-            #
-            # PER AGENT, not per ledger. With one paper account per agent, the
-            # rungs come online as their accounts are opened -- agent_0 can be
-            # trading for days before agent_3's account exists. A whole-ledger
-            # check would see "not empty" and never launch the rest.
             first_run = sched.get("first_run_date")
             past_first = first_run and str(today) >= str(first_run)
             weekday = today.weekday() <= 4
@@ -158,11 +162,6 @@ def main() -> None:
                 launch_ok = True
                 if needs_launch:
                     print(f"[xsec-scheduler] launching: {', '.join(pending)}")
-                    # Flatten ONLY the accounts being launched. A full sweep
-                    # would close the positions of agents already trading.
-                    # flatten exits non-zero if anything is left or a gateway
-                    # was unreachable; launching anyway would inherit positions
-                    # into a book the ledger believes is empty.
                     rc = run_job(["scripts/flatten_account.py", "--confirm",
                                   "--agents", *pending],
                                  "flatten", log_dir)
@@ -172,17 +171,14 @@ def main() -> None:
                               f"{', '.join(pending)} — SKIPPING launch. Will "
                               "retry at the next slot.", file=sys.stderr)
                     else:
-                        time.sleep(45)  # let the closes settle before sizing
+                        time.sleep(45)
 
                 if launch_ok:
-                    # A launch touches only the pending agents. The monthly
-                    # rebalance touches everyone.
                     args = ["scripts/run_xsec_live.py", "--job", "rebalance"]
                     if needs_launch and not is_monthly:
                         args += ["--agents", *pending]
                     run_job(args, "rebalance", log_dir)
 
-            # ---- DAILY MARK -----------------------------------------------
             if (now.weekday() in [_DAYS[d] for d in sched["mark_days"]]
                     and hhmm == sched["mark_time"]
                     and fired.get("mark") != minute_key):
@@ -191,8 +187,6 @@ def main() -> None:
                         "mark", log_dir)
 
         except Exception as e:                       # noqa: BLE001
-            # The scheduler must survive anything — a bad yaml edit, a disk
-            # hiccup. Log and keep looping.
             print(f"[xsec-scheduler] ERROR (continuing): {e}", file=sys.stderr)
 
         time.sleep(60)

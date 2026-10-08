@@ -43,7 +43,7 @@ LABELS = {
 def main(n_null: int = 100) -> None:
     with open(ROOT / "config" / "settings.yaml") as f:
         settings = yaml.safe_load(f)
-    start = "2000-01-01"          # deep history: these factors need decades
+    start = "2000-01-01"
 
     print("=" * 78)
     print("PIVOT A — cross-sectional commodity carry / momentum ladder")

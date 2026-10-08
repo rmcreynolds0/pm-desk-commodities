@@ -23,17 +23,12 @@ import markdown
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "pdf"
 
-# The three deliverables, in order. `compact` applies a denser layout — used for
-# the hiring one-pager, which is specified as 1-2 pages and otherwise spills a
-# small amount onto a third. Tightening layout is preferable to cutting content
-# that earns its place.
 DEFAULT_DOCS = [
     (ROOT / "docs" / "01_TECHNICAL_INFRASTRUCTURE.md", False),
     (ROOT / "docs" / "02_PROJECT_INTRO_HIRING.md", True),
     (ROOT / "docs" / "03_SUMMER_RESULTS.md", False),
 ]
 
-# Denser typography for short documents that must hit a page budget.
 COMPACT_CSS = """
 @page { margin: 12mm 13mm 13mm 13mm; }
 body { font-size: 9.1pt; line-height: 1.34; }
@@ -48,9 +43,6 @@ ul, ol { margin: .4em 0; }
 li { margin: .1em 0; }
 """
 
-# Print stylesheet. Tuned for documents that are mostly prose + dense tables:
-# generous table padding, avoid splitting rows across pages, and a monospace
-# stack that renders the box-drawing characters in the architecture diagrams.
 CSS = """
 @page { size: Letter; margin: 18mm 16mm 20mm 16mm; }
 body {
@@ -130,7 +122,7 @@ def render(md_path: Path, out_path: Path, compact: bool = False) -> None:
                 '<span class="pageNumber"></span></div>'),
         )
         browser.close()
-    tmp_html.unlink(missing_ok=True)      # keep only the PDF
+    tmp_html.unlink(missing_ok=True)
 
 
 def main() -> int:

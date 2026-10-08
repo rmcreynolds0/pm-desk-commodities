@@ -35,26 +35,18 @@ import yaml
 from storage_stress.agents import bootstrap_sharpe_ci, sharpe
 from storage_stress.execution import books
 
-# Repo root = two levels up from this file (dashboard/app.py -> repo).
 ROOT = Path(__file__).resolve().parents[1]
 
-# Fixed color per agent so a given book is the same color in every chart —
-# the eye tracks one line across panels without re-reading the legend.
 AGENT_COLORS = {
-    "agent_zero": "#9aa0a6",   # grey — it's the null benchmark
-    "agent_one": "#4c8bf5",    # blue
-    "agent_two": "#f5a623",    # amber
-    "agent_dsi": "#34a853",    # green — the full signal
+    "agent_zero": "#9aa0a6",
+    "agent_one": "#4c8bf5",
+    "agent_two": "#f5a623",
+    "agent_dsi": "#34a853",
 }
-# Adjacent rungs whose difference isolates one added piece of information.
 LADDER_PAIRS = [("agent_one", "agent_zero"), ("agent_two", "agent_one"),
                 ("agent_dsi", "agent_two")]
 
 
-# ---------------------------------------------------------------------------
-# Data access — cached briefly so reruns (Streamlit re-executes top-to-bottom
-# on every interaction) don't hammer SQLite. 30s TTL keeps it near-live.
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=30)
 def load_config() -> dict:
     with open(ROOT / "config" / "live.yaml") as f:
@@ -90,9 +82,6 @@ def max_drawdown(equity: pd.Series) -> float:
     return float((equity / equity.cummax() - 1).min())
 
 
-# ---------------------------------------------------------------------------
-# Page
-# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Storage-Stress Agents", layout="wide")
 st.title("Storage-Stress — Paper Trading Books")
 st.caption("Four agents on an information ladder, one shared IBKR paper account. "
@@ -101,8 +90,6 @@ st.caption("Four agents on an information ladder, one shared IBKR paper account.
 cfg = load_config()
 db_path = str(ROOT / cfg["paths"]["books_db"])
 
-# The DB may not exist until the first job runs — guide the user instead of
-# crashing with a stack trace.
 if not Path(db_path).exists():
     st.warning(
         "No ledger yet at `data/live/books.db`. Run a job first:\n\n"
@@ -111,12 +98,10 @@ if not Path(db_path).exists():
         "has written decisions and marks.")
     st.stop()
 
-# Bust the cache when the DB file is modified (new mark/decision written).
 db_mtime = Path(db_path).stat().st_mtime
 data = load_all(db_path)
 agents = data["agents"]
 
-# ---- 1. KPI ROW ------------------------------------------------------------
 st.subheader("Books at a glance")
 cols = st.columns(len(agents))
 for col, a in zip(cols, agents):
@@ -130,7 +115,6 @@ for col, a in zip(cols, agents):
     col.metric("Equity", f"${latest:,.0f}", f"{ret:+.2f}%")
     col.caption(f"max DD {dd:.1f}%  ·  {open_pos}")
 
-# ---- 2. EQUITY CURVES ------------------------------------------------------
 st.subheader("Equity curves")
 fig = go.Figure()
 for a in agents:
@@ -145,7 +129,6 @@ fig.update_layout(height=420, hovermode="x unified",
                   margin=dict(l=10, r=10, t=10, b=10))
 st.plotly_chart(fig, use_container_width=True)
 
-# ---- 3. LADDER: rolling Sharpe + paired difference CIs ---------------------
 st.subheader("Does the extra information help?")
 st.caption("Each rung adds one piece of information. A positive Sharpe "
            "difference whose 90% bootstrap CI excludes zero is evidence that "
@@ -184,8 +167,6 @@ with right:
         if hi not in agents or lo not in agents:
             continue
         rh, rl = periodic_returns(hi), periodic_returns(lo)
-        # Align on common weeks so the difference is paired, not two separate
-        # samples — the CI is on the DIFFERENCE of returns week by week.
         joined = pd.concat({"hi": rh, "lo": rl}, axis=1, join="inner").dropna()
         if len(joined) < 5:
             diff_rows.append({"comparison": f"{hi} − {lo}",
@@ -201,7 +182,6 @@ with right:
     st.dataframe(pd.DataFrame(diff_rows), hide_index=True, use_container_width=True)
     st.caption("✓ = CI excludes zero (statistically distinguishable at 90%).")
 
-# ---- 4. OPEN POSITIONS -----------------------------------------------------
 st.subheader("Open positions")
 pos_rows = []
 for a in agents:
@@ -223,7 +203,6 @@ if pos_rows:
 else:
     st.info("All books are flat right now.")
 
-# ---- 5. TRADE HISTORY ------------------------------------------------------
 st.subheader("Trade history")
 trades = data["trades"]
 if len(trades):
@@ -232,14 +211,12 @@ if len(trades):
     show["pnl"] = show["pnl"].round(0)
     show = show[["agent", "side", "contracts", "entry_date", "entry_px",
                  "exit_date", "exit_px", "exit_reason", "held_days", "pnl"]]
-    # Filter chip so you can drill into one book.
     pick = st.multiselect("Filter agents", agents, default=agents)
     st.dataframe(show[show["agent"].isin(pick)].iloc[::-1],
                  hide_index=True, use_container_width=True)
 else:
     st.info("No completed trades yet.")
 
-# ---- 6. SIGNAL / DECISION HISTORY -----------------------------------------
 st.subheader("Weekly signal history")
 st.caption("Every decision the engine recorded — including weeks it chose not "
            "to trade, and why. This is the rolling trade-by-trade research log.")

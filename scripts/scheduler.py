@@ -37,7 +37,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Map config's lowercase day tokens to date.weekday() ints (Mon=0).
 _DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
@@ -56,8 +55,6 @@ def run_job(job: str, log_dir: Path) -> None:
     log_path = log_dir / f"{job}-{stamp}.log"
     print(f"[scheduler] firing {job} -> {log_path}")
     with open(log_path, "a") as log:
-        # sys.executable keeps the venv; check=False because a failing job
-        # (e.g. gateway down) must not crash the scheduler loop.
         subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "run_agents.py"),
              "--job", job],
@@ -66,7 +63,7 @@ def run_job(job: str, log_dir: Path) -> None:
 
 def main() -> None:
     print("[scheduler] started — polling every 60s (Ctrl-C to stop)")
-    last_fired: dict[str, str] = {}   # job -> "YYYY-MM-DD HH:MM" last run
+    last_fired: dict[str, str] = {}
 
     while True:
         try:
@@ -77,14 +74,12 @@ def main() -> None:
             hhmm = now.strftime("%H:%M")
             minute_key = now.strftime("%Y-%m-%d %H:%M")
 
-            # Weekly decide job (e.g. Thu 16:00 ET).
             if (day == _DAYS[sched["decide_day"]]
                     and hhmm == sched["decide_time"]
                     and last_fired.get("decide") != minute_key):
                 last_fired["decide"] = minute_key
                 run_job("decide", ROOT / log_dir)
 
-            # Daily mark job (e.g. weekdays 17:15 ET).
             if (day in [_DAYS[d] for d in sched["mark_days"]]
                     and hhmm == sched["mark_time"]
                     and last_fired.get("mark") != minute_key):
@@ -92,8 +87,6 @@ def main() -> None:
                 run_job("mark", ROOT / log_dir)
 
         except Exception as e:                        # noqa: BLE001
-            # The scheduler must survive ANYTHING (bad yaml edit, fs hiccup).
-            # Log and keep looping; the operator sees it in the console/log.
             print(f"[scheduler] ERROR (loop continues): {e}", file=sys.stderr)
 
         time.sleep(60)

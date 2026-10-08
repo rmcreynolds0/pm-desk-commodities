@@ -37,9 +37,6 @@ def base_cfg(**over):
     return cfg
 
 
-# --------------------------------------------------------------------------
-# LIVE AGENTS — which rungs trade, vs which exist in the research spec
-# --------------------------------------------------------------------------
 def test_defaults_to_every_agent_when_key_absent():
     """A config predating live_agents must keep trading all four, not none."""
     cfg = base_cfg()
@@ -52,7 +49,6 @@ def test_single_live_agent():
     cfg = base_cfg()
     cfg["signal"]["live_agents"] = ["agent_3"]
     assert E.live_agents(cfg) == ["agent_3"]
-    # The research ladder must be untouched — every published figure uses it.
     assert len(cfg["signal"]["agents"]) == 4
 
 
@@ -78,9 +74,6 @@ def test_unknown_live_agent_raises_rather_than_silently_dropping():
         E.live_agents(cfg)
 
 
-# --------------------------------------------------------------------------
-# MODE DETECTION
-# --------------------------------------------------------------------------
 def test_per_agent_mode_detected():
     assert E.per_agent_accounts(base_cfg()) is True
 
@@ -97,9 +90,6 @@ def test_mode_defaults_to_shared_when_absent():
     assert E.per_agent_accounts(cfg) is False
 
 
-# --------------------------------------------------------------------------
-# ENDPOINT RESOLUTION
-# --------------------------------------------------------------------------
 def test_each_agent_gets_its_own_gateway():
     cfg = base_cfg()
     hosts = {a: E.endpoint_for(cfg, a)[0] for a in cfg["signal"]["agents"]}
@@ -107,8 +97,6 @@ def test_each_agent_gets_its_own_gateway():
         "agent_0": "ib-gateway-0", "agent_1": "ib-gateway-1",
         "agent_2": "ib-gateway-2", "agent_3": "ib-gateway-3",
     }
-    # Distinct hosts is the whole point: two agents sharing a gateway means
-    # two agents sharing an account, which is the layout we are avoiding.
     assert len(set(hosts.values())) == 4
 
 
@@ -136,9 +124,6 @@ def test_env_override_is_per_agent_only(monkeypatch):
     assert E.endpoint_for(cfg, "agent_0")[0] == "ib-gateway-0"
 
 
-# --------------------------------------------------------------------------
-# BOOK SIZING
-# --------------------------------------------------------------------------
 def test_solo_account_gets_four_times_the_shared_book():
     """The entire reason per-agent accounts exist: the n_share divisor.
 
@@ -150,7 +135,7 @@ def test_solo_account_gets_four_times_the_shared_book():
     shared = E.size_book(cfg, 1_000_000, 4, "shared")
     solo = E.size_book(cfg, 1_000_000, 1, "solo")
     assert shared == pytest.approx(520_833, rel=1e-3)
-    assert solo == pytest.approx(2_000_000)      # capped by configured book
+    assert solo == pytest.approx(2_000_000)
     assert solo > shared * 3
 
 
@@ -178,13 +163,9 @@ def test_sizing_formula_matches_documented_thresholds():
     """The numbers quoted in docs/DEPLOY.md must come from this same formula."""
     cfg = base_cfg()
     cfg["capital"]["book_size"] = 10_000_000
-    # $19.2M shared across 4 agents is documented as exactly the $10M/agent point.
     assert E.size_book(cfg, 19_200_000, 4, "doc") == pytest.approx(10_000_000)
 
 
-# --------------------------------------------------------------------------
-# SHAKEDOWN OVERRIDE
-# --------------------------------------------------------------------------
 def test_env_can_force_shared_mode_for_a_shakedown(monkeypatch):
     """Running a throwaway test on one account must not require editing the
     frozen spec — a temporary value written there survives into production."""
@@ -205,14 +186,11 @@ def test_config_wins_when_env_absent(monkeypatch):
 def test_shakedown_book_matches_measured_shared_figure():
     """The $520,833 quoted in the docs must come from this code path."""
     cfg = base_cfg()
-    cfg["capital"]["book_size"] = 10_000_000      # ceiling well above capacity
+    cfg["capital"]["book_size"] = 10_000_000
     assert E.size_book(cfg, 1_000_000, 4, "shakedown") == pytest.approx(
         520_833, rel=1e-3)
 
 
-# --------------------------------------------------------------------------
-# CLIENT IDS — IBKR allows each id once per gateway
-# --------------------------------------------------------------------------
 def test_signal_and_exec_ids_never_collide():
     """A rebalance holds the signal connection AND an execution connection
     open at once, and in per-agent mode both land on the same gateway. Sharing

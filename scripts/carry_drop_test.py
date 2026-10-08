@@ -40,7 +40,6 @@ from storage_stress.agents import xsec  # noqa: E402
 from storage_stress.data import commodities as CM  # noqa: E402
 from storage_stress.data import connectivity as C  # noqa: E402
 
-# Register the challenger: the full signal MINUS carry.
 xsec.AGENT_FACTORS["agent_3_nocarry"] = ["mom", "basis_mom"]
 
 CONDITIONS = {
@@ -49,7 +48,7 @@ CONDITIONS = {
     "vol-targeted":           dict(cost=0.0010, vol_target=0.10, since=None),
     "post-2019 + 3x + volT":  dict(cost=0.0030, vol_target=0.10, since="2019-01-01"),
 }
-DROP_THRESHOLD = 3      # improvements needed (out of 4) to drop carry
+DROP_THRESHOLD = 3
 
 
 def run(panel, agent, cost, vol_target, since):

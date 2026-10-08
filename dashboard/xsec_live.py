@@ -29,6 +29,22 @@ introduces a stray INSERT.
 
 Run locally:
     streamlit run dashboard/xsec_live.py --server.port 8501
+TRAPS
+-----
+READ-ONLY, AND ENFORCED. The ledger is opened with `mode=ro` via URI so this
+page cannot take a write lock from the engine even if a future edit introduces
+a stray INSERT.
+
+DO NOT MERGE THIS WITH pivot_a.py. That page renders BACKTEST csvs. A dashboard
+that silently falls back from live data to simulated data is worse than no
+dashboard, because nothing on screen tells you which you are looking at.
+
+UNTRADED DECISIONS ARE SHOWN ON PURPOSE. A wall of "rounds to 0 contracts" is
+the signal that the account is too small, and hiding it hides the main
+deployment blocker.
+
+RETURNS ARE MEASURED AGAINST EACH AGENT'S OWN STARTING CAPITAL, never the
+account NetLiq, which is a blend of all agents.
 """
 from __future__ import annotations
 
@@ -44,10 +60,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Fixed agent order and colour. Fixed rather than derived so the ladder always
-# reads in information order, and so an agent keeps its colour on every chart.
-# The ramp climbs from neutral grey (the null, deliberately muted) into the
-# accent hue — the ramp itself encodes "each rung adds one factor".
 AGENT_ORDER = ["agent_0", "agent_1", "agent_2", "agent_3"]
 AGENT_COLOR = {
     "agent_0": "#8E9A9D",
@@ -62,14 +74,9 @@ AGENT_ADDS = {
     "agent_3": "+ basis-momentum",
 }
 
-# Semantic colours, kept separate from the agent ramp so "good/bad" never
-# collides with "which agent".
 OK_C, WARN_C, BAD_C = "#177A63", "#B7791F", "#A6462E"
 
 
-# ---------------------------------------------------------------------------
-# DATA ACCESS
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def load_config() -> dict:
     with open(ROOT / "config" / "xsec.yaml") as f:
@@ -119,9 +126,6 @@ def chip(label: str, tone: str = "neutral") -> str:
             f"letter-spacing:.02em;white-space:nowrap'>{label}</span>")
 
 
-# ---------------------------------------------------------------------------
-# PAGE SETUP
-# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Pivot A — Live Ladder",
                    page_icon="📈", layout="wide")
 
@@ -163,9 +167,6 @@ def section(n: str, head: str, sub: str = "") -> None:
 
 
 cfg = load_config()
-# Path override exists so the page can be pointed at a BACKUP SNAPSHOT for
-# post-hoc analysis, and so it can be tested against a seeded fixture without
-# touching the live ledger. Defaults to the configured live path.
 DBS = os.environ.get("XSEC_DB", str(ROOT / cfg["paths"]["books_db"]))
 DB_EXISTS = Path(DBS).exists()
 
@@ -179,16 +180,12 @@ trades = read_table(DBS, "SELECT * FROM trades ORDER BY exit_date DESC")
 CAPITAL = (dict(zip(agents_tbl["name"], agents_tbl["capital"]))
            if not agents_tbl.empty else {})
 
-# ---------------------------------------------------------------------------
-# 0 · STATUS
-# ---------------------------------------------------------------------------
 st.markdown("## Pivot A — Live Agent Ladder")
 st.caption(
     "Cross-sectional commodity futures · IBKR **paper** · four agents sharing "
     "one account, separated by `orderRef` tag and this ledger."
 )
 
-# Work out the single most important fact: what state is the system in?
 if not DB_EXISTS:
     state_chip, state_msg = chip("NOT STARTED", "bad"), (
         f"`{cfg['paths']['books_db']}` does not exist. The engine creates it on "
@@ -225,8 +222,6 @@ c1, c2 = st.columns([1, 5])
 c1.markdown(state_chip, unsafe_allow_html=True)
 c2.markdown(state_msg)
 
-# Capital-adequacy banner. This is the live deployment blocker, so it gets
-# surfaced at the top rather than buried in the decision table.
 if not decisions.empty:
     latest_rb = decisions["rebal_date"].max()
     d0 = decisions[decisions["rebal_date"] == latest_rb]
@@ -247,22 +242,14 @@ if not decisions.empty:
                 f"rounded to zero on {latest_rb}. Below the 30% abort threshold, "
                 "but weights are drifting from target.")
 
-# Name the ledger ACTUALLY being read, not the configured one. When XSEC_DB
-# points elsewhere — a backup snapshot, a test fixture — a page that still
-# claims to show the live ledger is lying about its own provenance, which is
-# the same class of mistake as a dashboard that silently falls back to
-# backtest data.
 _overridden = "XSEC_DB" in os.environ
-_shown = "/".join(Path(DBS).parts[-2:])      # keep it short; full path is noise
+_shown = "/".join(Path(DBS).parts[-2:])
 st.caption(
     f"Read {dt.datetime.now():%Y-%m-%d %H:%M:%S} · ledger `{_shown}`"
     + (" · **⚠ XSEC_DB override — this is NOT the live ledger**"
        if _overridden else "")
     + " · read-only view")
 
-# ---------------------------------------------------------------------------
-# 1 · THE LADDER
-# ---------------------------------------------------------------------------
 section("Section 1", "The ladder",
         "Each agent sees exactly one more factor than the one below it, so the "
         "vertical gap between two curves is the live contribution of that one "
@@ -272,7 +259,6 @@ section("Section 1", "The ladder",
 if marks.empty:
     st.info("No marks recorded yet. The ladder appears after the first mark.")
 else:
-    # --- the pre-committed question, answered explicitly ---
     latest_date = marks["date"].max()
     latest = marks[marks["date"] == latest_date].set_index("agent")
 
@@ -320,8 +306,6 @@ else:
                           dash="dot" if agent == "agent_0" else "solid"),
                 hovertemplate="%{y:.2f}<extra>" + agent + "</extra>",
             ))
-        # Without a reference line the eye cannot separate profit from loss
-        # on an indexed axis.
         fig.add_hline(y=100, line=dict(color="rgba(128,128,128,.55)",
                                        width=1, dash="dash"))
         fig.update_layout(
@@ -343,9 +327,6 @@ else:
             "Treat anything under ~30 marked days as an infrastructure check, "
             "not a result.")
 
-# ---------------------------------------------------------------------------
-# 2 · AGENTS
-# ---------------------------------------------------------------------------
 section("Section 2", "Agents",
         "Return is measured against each agent's own starting capital. The "
         "account's blended NetLiq is useless for attribution — four books "
@@ -378,17 +359,12 @@ for col, agent in zip(cols, AGENT_ORDER):
             f"<div class='sub'>{ret_s} vs start · {pos_s}</div>"
             f"</div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# 3 · POSITIONS
-# ---------------------------------------------------------------------------
 section("Section 3", "Current positions")
 
 if positions.empty:
     st.info("Flat — no open positions in the ledger.")
 else:
     p = positions.copy()
-    # Notional per lot divides by the magnifier: cents-quoted markets (grains,
-    # softs, cattle) would otherwise read 100x too large.
     p["per_lot"] = p["entry_px"] * p["multiplier"] / p["magnifier"]
     p["gross"] = p["per_lot"] * p["contracts"].abs()
     p["side"] = p["contracts"].apply(lambda c: "LONG" if c > 0 else "SHORT")
@@ -417,9 +393,6 @@ else:
                     "entry_px": st.column_config.NumberColumn(format="%.4f"),
                 })
 
-# ---------------------------------------------------------------------------
-# 4 · DECISIONS
-# ---------------------------------------------------------------------------
 section("Section 4", "Decision log",
         "Every decision, traded or not. Rows with a non-zero target weight but "
         "zero actual contracts are positions the book wanted and could not "
@@ -449,9 +422,6 @@ else:
             "price": st.column_config.NumberColumn(format="%.4f"),
         })
 
-# ---------------------------------------------------------------------------
-# 5 · TRADES
-# ---------------------------------------------------------------------------
 section("Section 5", "Completed round trips")
 
 if trades.empty:
@@ -469,7 +439,6 @@ else:
         width="stretch", hide_index=True,
         column_config={"pnl": st.column_config.NumberColumn(format="$%.0f")})
 
-# ---------------------------------------------------------------------------
 st.markdown("<div class='sect'></div>", unsafe_allow_html=True)
 st.caption(
     f"Universe {len(cfg['universe'])} markets · rebalance "

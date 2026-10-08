@@ -34,9 +34,6 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-# The locked guard: close/never open positions within this many BUSINESS days
-# of a leg's expiry. Mirrors instruments.yaml; duplicated here as a default so
-# the module stands alone (the engine passes the config value explicitly).
 DEFAULT_GUARD_BD = 5
 
 
@@ -76,17 +73,11 @@ def front_delivery_month(today: dt.date, front_expiry: dt.date | None = None,
         guard) we skip one month ahead.
     """
     if front_expiry is not None:
-        # Nearest chain contract delivers NEXT month (NG for month M trades
-        # until ~3 bd before M starts). If we're inside the guard window of
-        # its expiry, the tradeable front is one month further out.
         base = _next_month(today)
         if business_days_between(today, front_expiry) <= guard_bd:
             return _next_month(dt.date(base[0], base[1], 1))
         return base
 
-    # Offline approximation: expiry ~= last business day of this month minus 3
-    # business days. Conservative: if fewer than (guard_bd + 3) business days
-    # remain in the month, treat the nearest contract as untradeable.
     last_dom = (dt.date(today.year + (today.month == 12), (today.month % 12) + 1, 1)
                 - dt.timedelta(days=1))
     remaining_bd = business_days_between(today, last_dom)
@@ -106,11 +97,11 @@ def deferred_delivery_month(front: tuple[int, int]) -> tuple[int, int]:
     Both are strictly AFTER the front month by construction.
     """
     y, m = front
-    if 4 <= m <= 10:                     # injection-season front -> next Jan
+    if 4 <= m <= 10:
         return (y + 1, 1)
-    if m in (11, 12):                    # Nov/Dec front -> April next year
+    if m in (11, 12):
         return (y + 1, 4)
-    return (y, 4)                        # Jan/Feb/Mar front -> April same year
+    return (y, 4)
 
 
 def must_exit(today: dt.date, front_expiry: dt.date,

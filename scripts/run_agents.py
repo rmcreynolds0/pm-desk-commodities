@@ -22,8 +22,6 @@ import datetime as dt
 import sys
 from pathlib import Path
 
-# Load .env BEFORE importing the engine so EIA/IBKR settings from the file
-# are visible to connectivity.py's os.environ reads.
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -71,7 +69,6 @@ def main() -> int:
         job_status()
         return 0
 
-    # Imported here (not at module top) so `status` works without ib_async.
     from storage_stress.execution import engine
 
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] run_agents --job {args.job}")
@@ -81,8 +78,6 @@ def main() -> int:
         else:
             engine.run_mark(ROOT, today)
     except ConnectionError as e:
-        # Gateway down: report clearly, exit non-zero so the scheduler's log
-        # shows a failure. The jobs are idempotent — the next run catches up.
         print(f"[ERROR] {e}", file=sys.stderr)
         return 1
     return 0

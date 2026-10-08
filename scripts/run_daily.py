@@ -40,7 +40,6 @@ def main(mode: str):
     settings, instruments = load_config()
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] run_daily mode={mode}")
 
-    # 1. data (synthetic unless EIA_API_KEY is set in the environment)
     salt = C.eia_storage("salt_south_central", start=settings["backtest"]["train_start"])
     c1 = C.eia_henryhub_futures(1)
     c2 = C.eia_henryhub_futures(2)
@@ -51,7 +50,6 @@ def main(mode: str):
     spread = spread.reindex(salt.index).interpolate().dropna()
     spread_ret = spread.diff()
 
-    # 2. signal
     dsi = build_dsi(
         salt,
         settings["signal"]["salt_max_rate_bcf_wk"],
@@ -69,7 +67,6 @@ def main(mode: str):
     print(f"  as of {latest.date()}: DSI z={z:+.2f}  vol_gate={'open' if gated else 'closed'}  "
           f"decision={'SHORT spread' if decision<0 else 'LONG spread' if decision>0 else 'flat'}")
 
-    # 3. act
     if mode == "paper" and decision != 0:
         print("  [paper] would route IBKR combo order here "
               "(wire src/storage_stress/execution/ + start IB Gateway)")

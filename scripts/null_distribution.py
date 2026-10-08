@@ -101,7 +101,6 @@ def main(n_seeds: int = 200) -> None:
         print(f"  sharpe        : mean={s.mean():+.3f}  sd={s.std():.3f}  "
               f"p95={np.percentile(s,95):+.3f}")
         print(f"  share of random agents PROFITABLE: {(r > 0).mean():.1%}")
-        # Where does the single seed=0 path (used elsewhere) actually sit?
         pct_seed0 = (r < r[0]).mean() * 100
         print(f"  seed=0 (the one used in the comparison): {r[0]:+.2f}%  "
               f"-> {pct_seed0:.0f}th percentile of chance\n")

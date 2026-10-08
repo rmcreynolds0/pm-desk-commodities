@@ -47,12 +47,10 @@ import os
 import sys
 from pathlib import Path
 
-# Load .env so R2_* vars are visible without exporting them by hand.
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# The R2 path layout from the QUANTT catalog: wrds/<schema>/<table>.parquet
 DEFAULT_BUCKET = "quantt-historical-market-data"
 SEARCH_TERMS = ["waha", "dominion", "dom south", "henry hub", "natural gas"]
 
@@ -70,7 +68,6 @@ def _require_env() -> dict:
         print("            R2_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com")
         print("            R2_BUCKET=%s   # optional" % DEFAULT_BUCKET)
         sys.exit(2)
-    # Endpoint host only (DuckDB's s3_endpoint wants no scheme, no trailing /).
     endpoint = os.environ["R2_ENDPOINT"].replace("https://", "").replace("http://", "").rstrip("/")
     return {
         "key_id": os.environ["R2_ACCESS_KEY_ID"],
@@ -92,8 +89,6 @@ def _connect(cfg: dict):
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
     # Parameterized SET is not supported for these PRAGMA-like settings, so we
-    # inline — but the values come straight from os.environ and are never
-    # printed anywhere in this script.
     con.execute(f"SET s3_endpoint='{cfg['endpoint']}';")
     con.execute("SET s3_region='auto';")
     con.execute("SET s3_url_style='path';")
@@ -123,7 +118,6 @@ def _glob(con, cfg: dict, schema: str) -> list[str]:
 def _text_columns(con, uri: str) -> list[str]:
     """Names of VARCHAR columns in a parquet table (the ones worth searching)."""
     info = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{uri}')").fetchall()
-    # DESCRIBE returns (column_name, column_type, ...). Keep string-ish types.
     return [name for name, ctype, *_ in info if "VARCHAR" in ctype.upper()]
 
 
@@ -144,12 +138,10 @@ def probe_doe(con, cfg: dict) -> None:
         return
     print("    doenames text columns:", ", ".join(text_cols) or "(none)")
 
-    # Show a few metadata rows so we can see the shape of the series catalog.
     print("\n    -- doenames sample (first 8 rows) --")
     sample = con.execute(f"SELECT * FROM read_parquet('{names_uri}') LIMIT 8").fetchdf()
     print(sample.to_string(max_colwidth=48))
 
-    # Build a case-insensitive search across every text column for our terms.
     if text_cols:
         clauses = []
         for col in text_cols:
@@ -173,8 +165,6 @@ def _sample_values(con, cfg: dict, hits) -> None:
     doe_uri = _uri(cfg, "doe_all", "doe")
     doe_cols = [c.lower() for c in con.execute(
         f"DESCRIBE SELECT * FROM read_parquet('{doe_uri}')").fetchdf()["column_name"]]
-    # The catalog says doe_all links on 'series code' + date. Find a code-like
-    # column in BOTH the names hits and the value table to join on.
     code_col = next((c for c in ["series", "series_code", "code", "id"]
                      if c in doe_cols), None)
     print("\n    -- doe value-table columns:", ", ".join(doe_cols))

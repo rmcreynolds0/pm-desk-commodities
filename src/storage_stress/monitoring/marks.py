@@ -42,19 +42,14 @@ def check_exits(pos: dict, today: dt.date, spread_px: float,
     day, the recorded reason is the highest-priority one, which keeps the
     trade log's exit-reason statistics meaningful.
     """
-    # 1. Delivery guard — compare today to the stored front-leg expiry.
     front_expiry = dt.date.fromisoformat(pos["front_expiry"])
     if C.must_exit(today, front_expiry, guard_bd):
         return "delivery_guard"
 
-    # 2. Volatility stop: adverse move beyond 2x the entry-day vol.
-    #    side * (px - entry) is the SIGNED favorable move; a large negative
-    #    value means the trade moved against us.
     adverse = pos["side"] * (float(spread_px) - pos["entry_px"])
     if adverse < -stop_vol_multiple * pos["entry_vol"]:
         return "stop"
 
-    # 3. Time stop.
     held = (today - dt.date.fromisoformat(pos["entry_date"])).days
     if held >= max_hold_days:
         return "time"

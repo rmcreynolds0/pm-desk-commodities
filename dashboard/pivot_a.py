@@ -25,12 +25,11 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 PROC = ROOT / "data" / "processed"
 
-# Fixed colour per agent so a book is the same colour in every chart.
 COLORS = {
-    "agent_0": "#9aa0a6",   # grey — the null benchmark
-    "agent_1": "#4c8bf5",   # blue
-    "agent_2": "#f5a623",   # amber
-    "agent_3": "#34a853",   # green — full signal
+    "agent_0": "#9aa0a6",
+    "agent_1": "#4c8bf5",
+    "agent_2": "#f5a623",
+    "agent_3": "#34a853",
 }
 LABELS = {
     "agent_0": "random (null)",
@@ -63,7 +62,6 @@ if ladder is None:
     st.error("No results found. Run `python scripts/run_xsec.py` first.")
     st.stop()
 
-# ---- 1. THE LADDER ---------------------------------------------------------
 st.subheader("The information ladder")
 st.caption("Each rung sees exactly one more factor than the one below it, so "
            "the gap between adjacent rungs isolates that factor's contribution.")
@@ -75,7 +73,6 @@ for col, (_, r) in zip(cols, ladder.iterrows()):
     col.metric("Sharpe", f"{r['sharpe']:.2f}", f"{r['ann_ret%']:+.2f}%/yr")
     col.caption(f"max DD {r['max_dd%']:.1f}%")
 
-# ---- 2. EQUITY CURVES ------------------------------------------------------
 if curves is not None and len(curves):
     st.subheader("Equity curves (growth of 1.0, net of costs)")
     date_col = curves.columns[0]
@@ -92,11 +89,9 @@ if curves is not None and len(curves):
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Log scale — equal vertical distances are equal percentage moves.")
 
-# ---- 3. FULL STATS ---------------------------------------------------------
 st.subheader("Full statistics")
 st.dataframe(ladder.round(3), hide_index=True, use_container_width=True)
 
-# ---- 4. ROBUSTNESS ---------------------------------------------------------
 st.subheader("Robustness — the tests that killed the previous strategy")
 
 left, right = st.columns(2)
@@ -121,7 +116,6 @@ with right:
     }), hide_index=True, use_container_width=True)
     st.caption("No post-publication decay: the full signal strengthens over time.")
 
-# ---- 5. THE CARRY PARADOX --------------------------------------------------
 st.subheader("The carry paradox")
 st.markdown(
     "Carry's **standalone** Sharpe has decayed to **−0.51** over the last three "
@@ -143,7 +137,6 @@ st.success(
     "cuts portfolio *variance* more than it cuts return. A factor can be a poor "
     "standalone bet and still earn its place through diversification.")
 
-# ---- 6. VOL TARGETING ------------------------------------------------------
 st.subheader("Volatility targeting (10% annualised)")
 st.dataframe(pd.DataFrame({
     "agent": ["agent_0", "agent_1", "agent_2", "agent_3"],
@@ -154,7 +147,6 @@ st.dataframe(pd.DataFrame({
 }), hide_index=True, use_container_width=True)
 st.caption("Average leverage 0.53 — the rule mostly *de-risks*. Drawdown roughly halved.")
 
-# ---- 7. HONEST LIMITATIONS -------------------------------------------------
 st.subheader("What is NOT established")
 st.markdown("""
 - **No out-of-sample holdout.** Universe, momentum window, tercile cutoffs,

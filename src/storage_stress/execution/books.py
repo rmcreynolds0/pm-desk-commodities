@@ -41,10 +41,6 @@ from pathlib import Path
 
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Schema DDL. CREATE IF NOT EXISTS everywhere -> init is idempotent; calling
-# init_db() on every job start is safe and removes "did you migrate?" drift.
-# ---------------------------------------------------------------------------
 _DDL = """
 CREATE TABLE IF NOT EXISTS agents (
     name        TEXT PRIMARY KEY,   -- e.g. 'agent_dsi'
@@ -129,8 +125,6 @@ CREATE TABLE IF NOT EXISTS marks (
 );
 """
 
-# $ value of a 1.00 move in the spread per contract (NG = 10,000 MMBtu).
-# Kept here (not imported from agents.py) so the execution layer stands alone.
 POINT_VALUE = 10_000.0
 
 
@@ -151,9 +145,6 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 def ensure_agent(con: sqlite3.Connection, name: str, capital: float) -> None:
     """Idempotent registration. Capital is only set on FIRST registration —
     changing live.yaml later must not silently rebase an agent's equity."""
@@ -164,9 +155,6 @@ def ensure_agent(con: sqlite3.Connection, name: str, capital: float) -> None:
     con.commit()
 
 
-# ---------------------------------------------------------------------------
-# Event writers — each is a single small transaction
-# ---------------------------------------------------------------------------
 def record_decision(con, agent: str, decision_date: str, side: int, z, gate,
                     season: str, spread_px, spread_vol, contracts_tgt: float,
                     acted: bool, reason: str) -> int:
@@ -210,9 +198,6 @@ def record_fill(con, order_id: int, agent: str, price, quantity, note: str = "")
     con.commit()
 
 
-# ---------------------------------------------------------------------------
-# Position lifecycle
-# ---------------------------------------------------------------------------
 def open_position(con, agent: str, side: int, contracts: int, entry_date: str,
                   entry_px: float, entry_vol: float, front_leg: str,
                   deferred_leg: str, front_expiry: str) -> None:
@@ -269,9 +254,6 @@ def close_position(con, agent: str, exit_date: str, exit_px: float,
     return pnl
 
 
-# ---------------------------------------------------------------------------
-# Marks & equity
-# ---------------------------------------------------------------------------
 def realized_pnl(con, agent: str) -> float:
     """Sum of all completed-trade P&L — the 'banked' component of equity."""
     row = con.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE agent=?",
@@ -299,9 +281,6 @@ def record_mark(con, agent: str, date: str, spread_px, unrealized: float) -> flo
     return equity
 
 
-# ---------------------------------------------------------------------------
-# Read side — what the dashboard consumes (returns pandas for convenience)
-# ---------------------------------------------------------------------------
 def equity_curve(con, agent: str) -> pd.DataFrame:
     return pd.read_sql_query(
         "SELECT date, spread_px, unrealized_pnl, equity FROM marks "

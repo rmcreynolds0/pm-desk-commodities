@@ -27,6 +27,18 @@ WHAT IS DELIBERATELY NOT IN THE PAYLOAD
 `build_payload` is a PURE FUNCTION of the ledger so it can be unit-tested
 against a fixture. The tests assert what must NOT appear, because a leak here
 is published to a URL and cannot be recalled.
+TRAPS
+-----
+build_payload IS PURE so it can be tested against a fixture. Its tests are
+mostly NEGATIVE assertions, and that is deliberate: this payload goes to a URL,
+and a field that should not be there cannot be recalled once published.
+
+DELIBERATELY ABSENT: account identifiers, IBKR order ids, orderRef tags,
+credentials. Add nothing to the payload without adding a test that the account
+cannot be identified from it.
+
+The equity curve is DOWNSAMPLED rather than unbounded -- anyone holding the URL
+fetches the whole file.
 """
 from __future__ import annotations
 
@@ -39,9 +51,6 @@ import pandas as pd
 
 SCHEMA = "xsec-status/1"
 
-# Human labels for what each rung can see. Kept here rather than derived from
-# the config so the published payload reads as English to someone who has
-# never seen the repository.
 SEES = {
     "agent_0": "random — sees nothing (null benchmark)",
     "agent_1": "carry",
@@ -78,7 +87,6 @@ def build_payload(con, cfg: dict, max_curve_points: int = 400,
     capital = (dict(zip(agents_tbl["name"], agents_tbl["capital"]))
                if not agents_tbl.empty else {})
 
-    # --- per-agent summary -------------------------------------------------
     agent_rows = []
     for a in live:
         cap = capital.get(a)
@@ -102,14 +110,11 @@ def build_payload(con, cfg: dict, max_curve_points: int = 400,
             "last_mark": last_mark,
         })
 
-    # --- equity curve, one row per date ------------------------------------
     curve: list[dict[str, Any]] = []
     if not marks.empty:
         wide = (marks[marks["agent"].isin(live)]
                 .pivot_table(index="date", columns="agent", values="equity")
                 .sort_index())
-        # Cap the payload size: a multi-year daily curve would grow without
-        # bound and this is fetched by anyone holding the URL.
         if len(wide) > max_curve_points:
             step = len(wide) // max_curve_points + 1
             wide = wide.iloc[::step]
@@ -119,7 +124,6 @@ def build_payload(con, cfg: dict, max_curve_points: int = 400,
                           for a, v in row.items()})
             curve.append(point)
 
-    # --- positions ---------------------------------------------------------
     pos_rows = []
     if not positions.empty:
         p = positions[positions["agent"].isin(live)]
@@ -131,14 +135,10 @@ def build_payload(con, cfg: dict, max_curve_points: int = 400,
                 "contracts": int(r.contracts),
                 "entry_date": str(r.entry_date),
                 "entry_px": float(r.entry_px),
-                "contract": r.local_symbol,      # e.g. CLZ6 — public info
+                "contract": r.local_symbol,
                 "expiry": str(r.expiry),
             })
 
-    # --- decisions, including the ones NOT traded --------------------------
-    # The untraded rows are the honest part: they show what the book wanted and
-    # could not take, which is the main thing an outside reader should be able
-    # to check.
     dec_rows = []
     if not decisions.empty:
         d = decisions[decisions["agent"].isin(live)].head(max_decisions)
@@ -178,7 +178,6 @@ def build_payload(con, cfg: dict, max_curve_points: int = 400,
     }
 
 
-# ---------------------------------------------------------------------------
 def upload_r2(body: str, key: str, content_type: str = "application/json",
               env: dict[str, str] | None = None) -> str:
     """PUT the snapshot into Cloudflare R2 (S3-compatible). Returns the key.
@@ -203,13 +202,11 @@ def upload_r2(body: str, key: str, content_type: str = "application/json",
         endpoint_url=env["R2_ENDPOINT"],
         aws_access_key_id=env["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=env["R2_SECRET_ACCESS_KEY"],
-        region_name="auto",                  # R2 ignores region but boto3 wants one
+        region_name="auto",
     )
     s3.put_object(
         Bucket=env["R2_BUCKET"], Key=key,
         Body=body.encode("utf-8"), ContentType=content_type,
-        # Short cache so a watcher polling the URL sees a fresh snapshot
-        # soon after each mark, without hammering the bucket.
         CacheControl="public, max-age=300",
     )
     return key
@@ -269,8 +266,6 @@ def upload_gist(body: str, filename: str = "status.json",
 
     data = r.json()
     files = data.get("files", {})
-    # raw_url carries a revision hash and so pins THAT version. Strip it to
-    # the stable form, which always serves the newest content.
     owner = (data.get("owner") or {}).get("login", "")
     return (f"https://gist.githubusercontent.com/{owner}/{gist_id}"
             f"/raw/{filename}")

@@ -19,12 +19,11 @@ import numpy as np
 import pandas as pd
 
 
-# Decision
 @dataclass
 class Decision:
     date: pd.Timestamp
-    trade_type: str          # "A" (short spread) or "B" (long spread)
-    side: int                # +1 long spread, -1 short spread
+    trade_type: str
+    side: int
     reason: str
 
 
@@ -40,7 +39,6 @@ def agent_zero_signal(d: pd.Timestamp, rng: np.random.Generator) -> Decision:
     return Decision(d, "B", side=+1, reason="random Type B (buy front / sell deferred)")
 
 
-# Sizing
 def size_position(capital: float, spread_daily_sd: float,
                   risk_per_sd: float = 0.005,
                   point_value: float = 10_000.0) -> float:
@@ -51,7 +49,6 @@ def size_position(capital: float, spread_daily_sd: float,
     return (capital * risk_per_sd) / (spread_daily_sd * point_value)
 
 
-# Paper-Trading Order
 def place_combo_order_ibkr(decision: Decision, contracts: int, cfg):
     """Route a 2-leg NG calendar spread as an IBKR combo (BAG) order on paper.
     Only called in mode='paper'. Requires ib_async + running IB Gateway."""
@@ -62,7 +59,6 @@ def place_combo_order_ibkr(decision: Decision, contracts: int, cfg):
         det = sorted((d.contract for d in ib.reqContractDetails(ng)),
                      key=lambda c: c.lastTradeDateOrContractMonth)
         front, deferred = det[0], det[1]
-        # Type A short spread = sell front, buy deferred ; Type B = opposite
         front_action = "SELL" if decision.trade_type == "A" else "BUY"
         defer_action = "BUY" if decision.trade_type == "A" else "SELL"
         bag = Contract(symbol="NG", secType="BAG", exchange="NYMEX", currency="USD")
@@ -70,7 +66,7 @@ def place_combo_order_ibkr(decision: Decision, contracts: int, cfg):
             ComboLeg(conId=front.conId, ratio=1, action=front_action, exchange="NYMEX"),
             ComboLeg(conId=deferred.conId, ratio=1, action=defer_action, exchange="NYMEX"),
         ]
-        order = MarketOrder("BUY", max(int(contracts), 1))  # BAG direction set by legs
+        order = MarketOrder("BUY", max(int(contracts), 1))
         trade = ib.placeOrder(bag, order)
         ib.sleep(2)
         return {"status": trade.orderStatus.status,
@@ -79,7 +75,6 @@ def place_combo_order_ibkr(decision: Decision, contracts: int, cfg):
         ib.disconnect()
 
 
-# Backtest Run
 @dataclass
 class Book:
     capital: float = 100_000.0
@@ -105,7 +100,6 @@ def run_backtest(spread: pd.Series, spread_vol: pd.Series,
 
     for i, d in enumerate(idx):
         px = spread.iloc[i]
-        # mark open position
         if bk.in_pos != 0 and i > 0:
             bk.equity += bk.in_pos * (px - spread.iloc[i-1]) * bk.contracts * point_value
             held = (d - bk.entry_date).days
@@ -115,7 +109,6 @@ def run_backtest(spread: pd.Series, spread_vol: pd.Series,
                                "reason": "time" if held >= hold_days else "stop",
                                "equity": round(bk.equity, 2)})
                 bk.in_pos = 0; bk.contracts = 0.0
-        # decision + entry (flat only)
         if bk.in_pos == 0:
             dec = agent_zero_signal(d, rng)
             vol = spread_vol.get(d, np.nan)

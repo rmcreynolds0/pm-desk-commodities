@@ -57,10 +57,8 @@ load_dotenv(ROOT / ".env")
 from storage_stress.data import connectivity as C  # noqa: E402
 from storage_stress.data import futures as F  # noqa: E402
 
-# First US LNG export cargo from Sabine Pass — the regime break the strategy
-# document names. Everything before is "pre", on/after is "post".
 LNG_BREAK = pd.Timestamp("2016-02-24")
-HISTORY_START = "1997-01-01"   # deep enough for a long pre-period
+HISTORY_START = "1997-01-01"
 
 
 def describe(s: pd.Series, label: str) -> dict:
@@ -98,8 +96,6 @@ def main() -> None:
     finally:
         con.close()
 
-    # Weekly sampling; roll-day moves are excluded from the CHANGE series
-    # (they are splicing artifacts, per the roll fix in simulate()).
     spread = daily["spread"].resample("W-FRI").last().dropna()
     roll_w = (daily["roll"].resample("W-FRI").max()
               .reindex(spread.index).fillna(False).astype(bool))
@@ -117,7 +113,6 @@ def main() -> None:
 
     results = []
 
-    # --- 1. LEVEL ---------------------------------------------------------
     t, p = stats.ttest_ind(pre, post, equal_var=False)
     print(f"\n[1] LEVEL  (Welch t-test on spread level)")
     print(f"    pre mean {pre.mean():+.4f}   post mean {post.mean():+.4f}   "
@@ -125,8 +120,6 @@ def main() -> None:
     print(f"    t={t:+.3f}  p={p:.4g}  -> {'DIFFERENT' if p < 0.05 else 'no difference'}")
     results.append(("level", p < 0.05, p))
 
-    # --- 2. VOLATILITY ----------------------------------------------------
-    # Levene is robust to non-normality, which spread changes certainly are.
     lev, p_lev = stats.levene(pre_c, post_c)
     print(f"\n[2] VOLATILITY  (Levene test on weekly changes)")
     print(f"    pre sd {pre_c.std():.4f}   post sd {post_c.std():.4f}   "
@@ -135,7 +128,6 @@ def main() -> None:
           f"{'DIFFERENT' if p_lev < 0.05 else 'no difference'}")
     results.append(("volatility", p_lev < 0.05, p_lev))
 
-    # --- 3. SEASONAL AMPLITUDE -------------------------------------------
     amp_pre, amp_post = seasonal_amplitude(pre), seasonal_amplitude(post)
     print(f"\n[3] SEASONAL AMPLITUDE  (sd of month-of-year means)")
     print(f"    pre {amp_pre:.4f}   post {amp_post:.4f}   "
@@ -143,11 +135,9 @@ def main() -> None:
     print(f"    -> {'LARGER post-2016 (consistent with tighter system)' if amp_post > amp_pre else 'NOT larger post-2016'}")
     results.append(("seasonal_amplitude", amp_post > amp_pre * 1.2, None))
 
-    # --- 4. MEAN REVERSION ------------------------------------------------
     print(f"\n[4] MEAN REVERSION  (lag-1 autocorr of weekly changes)")
     print(f"    pre {ar1(pre):+.4f}   post {ar1(post):+.4f}")
 
-    # --- VERDICT ----------------------------------------------------------
     print("\n" + "=" * 76)
     print("VERDICT")
     print("=" * 76)

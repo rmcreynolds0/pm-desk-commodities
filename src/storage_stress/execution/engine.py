@@ -47,9 +47,6 @@ from storage_stress.monitoring import marks as M
 from storage_stress.signal import build_dsi, zscore, vol_regime_gate
 
 
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
 def load_configs(root: Path) -> tuple[dict, dict]:
     """(live, settings) config dicts. Both YAML files are the only knobs —
     the engine itself has no tunable constants (auditability rule).
@@ -79,9 +76,6 @@ def _open_ledger(root: Path, live: dict):
     return con
 
 
-# ---------------------------------------------------------------------------
-# Data assembly (decision time)
-# ---------------------------------------------------------------------------
 def assemble_dataset(broker: Broker, live: dict, settings: dict,
                      today: dt.date) -> dict:
     """Pull every input the agent ladder needs and align to a weekly grid.
@@ -91,27 +85,17 @@ def assemble_dataset(broker: Broker, live: dict, settings: dict,
     """
     start = live["data"]["history_start"]
 
-    # -- 1. EIA weekly salt storage (REAL; the core feed). Raises on outage —
-    #       a decide run without fresh storage data must not silently trade.
     salt = conn.eia_storage("salt_south_central", start=start, synthetic=False)
 
-    # -- 2. Spread legs + daily spread series from IBKR (REAL; replaces the
-    #       discontinued EIA RNGC feed). Resolve the CURRENT seasonal pair.
     front, deferred, front_expiry = broker.resolve_legs(today)
     spread_daily = broker.spread_series(front, deferred,
                                         live["data"]["spread_bar_duration"])
 
-    # -- 3. Weekly alignment: Friday-stamped weekly closes, same convention
-    #       as scripts/run_backtest.py so windows/z-scores are comparable.
     spread_w = spread_daily.resample("W-FRI").last().dropna()
     spread_ret = spread_w.diff()
     vol_window = live["data"]["spread_vol_window_weeks"]
     spread_vol = spread_ret.rolling(vol_window).std()
 
-    # -- 4. Basis series for the DSI residualization. STILL SYNTHETIC (gap
-    #       #2 in FRAMEWORK.md): a seeded random walk stands in until a real
-    #       Waha / Dom South feed is wired. agent_dsi therefore runs in
-    #       documented "hybrid" mode — flagged in every decision row reason.
     waha = conn.regional_basis("waha", start=start).iloc[:, 0]
     dom = conn.regional_basis("domsouth", start=start).iloc[:, 0]
 
@@ -124,9 +108,6 @@ def assemble_dataset(broker: Broker, live: dict, settings: dict,
     }
 
 
-# ---------------------------------------------------------------------------
-# Signals — one latest-bar decision per agent, using the backtest functions
-# ---------------------------------------------------------------------------
 def compute_signals(data: dict, live: dict, settings: dict,
                     today: dt.date) -> dict:
     """{agent_name: {side, z, gate, season, reason}} for the latest week.
@@ -140,9 +121,6 @@ def compute_signals(data: dict, live: dict, settings: dict,
     out: dict[str, dict] = {}
     acfg = live["agents"]
 
-    # ---- agent_zero: deterministic weekly coin flip. Seeding with
-    # (config seed, iso-year, iso-week) makes the flip reproducible for a
-    # given week — re-running the decide job cannot flip the coin again.
     if acfg["agent_zero"].get("enabled"):
         iso = today.isocalendar()
         rng = np.random.default_rng(
@@ -155,7 +133,6 @@ def compute_signals(data: dict, live: dict, settings: dict,
 
     salt_flow = data["salt"]["net_flow_bcf"]
 
-    # ---- agent_one: 5y z of raw salt net flow (the MVP signal).
     if acfg["agent_one"].get("enabled"):
         sides = agent_one(salt_flow, thresh=acfg["agent_one"]["entry_z"])
         z = zscore(salt_flow, window=5 * 52).iloc[-1]
@@ -165,17 +142,12 @@ def compute_signals(data: dict, live: dict, settings: dict,
             "reason": f"salt-flow z={z:+.2f} vs ±{acfg['agent_one']['entry_z']}",
         }
 
-    # ---- Shared DSI pipeline for agents two & dsi. build_dsi returns both
-    # dsi_raw (through step 4) and dsi_clean (residualized) so one call
-    # feeds both rungs.
     need_dsi = acfg["agent_two"].get("enabled") or acfg["agent_dsi"].get("enabled")
     if need_dsi:
         dsi = build_dsi(
             data["salt"], settings["signal"]["salt_max_rate_bcf_wk"],
             data["waha"], data["dom"], k=settings["signal"]["convex_k"])
 
-    # ---- agent_two: z of dsi_raw — smoothing/deseasonalization rung,
-    # deliberately NO residualization and NO vol gate.
     if acfg["agent_two"].get("enabled"):
         sides = agent_two(dsi["dsi_raw"], thresh=acfg["agent_two"]["entry_z"])
         z = zscore(dsi["dsi_raw"], window=5 * 52).iloc[-1]
@@ -185,12 +157,7 @@ def compute_signals(data: dict, live: dict, settings: dict,
             "reason": f"dsi_raw z={z:+.2f} vs ±{acfg['agent_two']['entry_z']}",
         }
 
-    # ---- agent_dsi: full residualized signal + vol regime gate. The reason
-    # string carries the basis_mode flag so every decision row records that
-    # the residualization currently runs on synthetic basis (hybrid mode).
     if acfg["agent_dsi"].get("enabled"):
-        # Align the gate to the DSI index (spread history is shorter than
-        # storage history; reindex+fillna(False) fails closed — no data, no trade).
         spread_ret_w = data["spread_ret"]
         sides = agent_dsi(dsi["dsi_clean"], spread_ret_w,
                           entry_z=acfg["agent_dsi"]["entry_z"])
@@ -208,9 +175,6 @@ def compute_signals(data: dict, live: dict, settings: dict,
     return out
 
 
-# ---------------------------------------------------------------------------
-# Sizing
-# ---------------------------------------------------------------------------
 def size_contracts(capital: float, spread_vol: float, settings: dict) -> int:
     """Inverse-vol sizing, floored to whole contracts.
 
@@ -226,9 +190,6 @@ def size_contracts(capital: float, spread_vol: float, settings: dict) -> int:
     return int(round(raw)) if raw >= 0.5 else 0
 
 
-# ---------------------------------------------------------------------------
-# THE WEEKLY DECIDE JOB
-# ---------------------------------------------------------------------------
 def run_decide(root: Path, today: dt.date | None = None) -> None:
     today = today or dt.date.today()
     live, settings = load_configs(root)
@@ -251,13 +212,8 @@ def run_decide(root: Path, today: dt.date | None = None) -> None:
             acfg = live["agents"][agent]
             pos = books.get_position(con, agent)
 
-            # Target size only matters when we would actually enter.
             qty = size_contracts(acfg["capital"], vol, settings)
 
-            # Entry conditions: signal fired, agent is flat, size >= 1.
-            # (Exits are the mark job's responsibility — the decide job only
-            # opens; this mirrors simulate(), where entries and exits are
-            # evaluated by separate branches.)
             will_act = sig["side"] != 0 and pos is None and qty >= 1
 
             reason = sig["reason"]
@@ -274,7 +230,6 @@ def run_decide(root: Path, today: dt.date | None = None) -> None:
                 print(f"[decide] {agent:<11} side={sig['side']:+d} -> no order ({reason})")
                 continue
 
-            # ---- route the tagged combo order and record everything
             result = broker.place_spread_order(
                 agent, sig["side"], qty, data["front"], data["deferred"],
                 action="ENTRY")
@@ -283,13 +238,6 @@ def run_decide(root: Path, today: dt.date | None = None) -> None:
                 result["front_local"], result["deferred_local"],
                 result["ib_order_id"], result["status"])
 
-            # Record the entry in the SAME convention the mark job uses:
-            # spread = front_close - deferred_close. IBKR's BAG combo
-            # avgFillPrice uses a DIFFERENT (opposite) sign convention, so we
-            # keep it only as an audit note — using it as the P&L entry price
-            # flips the sign and corrupts every subsequent mark. For a market
-            # order the decision-time spread and the true fill differ only by
-            # slippage, which the strategy already models as a separate cost.
             combo_fill = result["avg_fill_price"]
             entry_px = spread_px
             note = (f"ibkr_combo_fill={combo_fill}" if combo_fill is not None
@@ -306,9 +254,6 @@ def run_decide(root: Path, today: dt.date | None = None) -> None:
     con.close()
 
 
-# ---------------------------------------------------------------------------
-# THE DAILY MARK JOB
-# ---------------------------------------------------------------------------
 def run_mark(root: Path, today: dt.date | None = None) -> None:
     today = today or dt.date.today()
     live, settings = load_configs(root)
@@ -327,15 +272,10 @@ def run_mark(root: Path, today: dt.date | None = None) -> None:
             pos = books.get_position(con, agent)
 
             if pos is None:
-                # Flat book still gets a daily equity row -> continuous
-                # curves on the dashboard, and gaps in the series become a
-                # monitoring signal (job didn't run) instead of ambiguity.
                 eq = books.record_mark(con, agent, today.isoformat(), None, 0.0)
                 print(f"[mark] {agent:<11} flat  equity={eq:,.0f}")
                 continue
 
-            # Price the SPECIFIC legs this agent holds (they may differ from
-            # the current seasonal pair after a month rolls).
             spread_px = _position_spread_px(broker, chain, pos)
             if spread_px is None:
                 print(f"[mark] {agent:<11} WARNING: no price for "
@@ -348,7 +288,6 @@ def run_mark(root: Path, today: dt.date | None = None) -> None:
                 settings["entry"]["stop_vol_multiple"])
 
             if reason is not None:
-                # Exit: route the OPPOSITE combo (side flips), tagged EXIT.
                 front_c = _by_local(chain, pos["front_leg"])
                 deferred_c = _by_local(chain, pos["deferred_leg"])
                 result = broker.place_spread_order(
@@ -358,16 +297,13 @@ def run_mark(root: Path, today: dt.date | None = None) -> None:
                     con, agent, result["order_ref"], "EXIT", -pos["side"],
                     pos["contracts"], pos["front_leg"], pos["deferred_leg"],
                     result["ib_order_id"], result["status"])
-                # Exit price in the mark convention (front - deferred), the
-                # same as entry; the IBKR combo fill is kept only as an audit
-                # note (its sign convention differs — see the entry path).
                 exit_px = spread_px
                 books.record_fill(con, order_id, agent, exit_px,
                                   pos["contracts"],
                                   f"ibkr_combo_fill={result['avg_fill_price']}")
                 pnl = books.close_position(con, agent, today.isoformat(),
                                            exit_px, reason)
-                unreal = 0.0            # realized now; mark reflects it via equity
+                unreal = 0.0
                 print(f"[mark] {agent:<11} EXIT ({reason}) px={exit_px:.4f} "
                       f"pnl={pnl:+,.0f}")
 
@@ -379,9 +315,6 @@ def run_mark(root: Path, today: dt.date | None = None) -> None:
     con.close()
 
 
-# ---------------------------------------------------------------------------
-# Mark-job helpers
-# ---------------------------------------------------------------------------
 def _by_local(chain, local_symbol: str):
     """Find a chain contract by its localSymbol (stored in the ledger)."""
     for c in chain:

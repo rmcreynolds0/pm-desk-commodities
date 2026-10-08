@@ -32,6 +32,36 @@ The research spec targets 10% annualised vol, scaling by
 agent's own daily marks. Until `vol_window_days` of history exists, leverage is
 1.0 -- exactly what the backtest does during its warm-up, so live and backtest
 agree from the first day.
+
+TRAPS -- each of these was a real failure, not a hypothetical
+-------------------------------------------------------------
+PLAN, THEN JUDGE, THEN EXECUTE. run_rebalance computes every position first
+and only then decides whether to trade. An earlier version ran the feasibility
+check AFTER the trading loop, so an agent printed "ABORTED" having already
+traded and written positions -- the exact silent divergence the rail exists to
+prevent. Pass 1 sends no orders. Do not merge the passes.
+
+THE LEDGER MUST ONLY EVER REFLECT WHAT ACTUALLY FILLED. Orders get rejected
+for real reasons: insufficient margin, IBKR's near-expiry delivery policy,
+per-order size caps. Writing the intended position regardless once left the
+books claiming 54 holdings IBKR did not have, which made every subsequent mark
+fiction. Positions become `held + signed_filled`, never the target.
+
+CONNECT ON 4004, NOT 4002. IB Gateway binds 4002 but honours the API handshake
+only from 127.0.0.1, so a connection from another container completes at the
+TCP layer and then hangs -- a timeout, not a refusal. The image runs socat on
+4004 forwarding to 127.0.0.1:4002; that is the only port another container can
+use.
+
+EVERY CONCURRENT CONNECTION NEEDS ITS OWN CLIENT ID. A rebalance holds the
+signal connection and an execution connection open at once, and in per-agent
+mode both land on the same gateway. Sharing an id gives "Error 326: client id
+is already in use". See client_id_for().
+
+SIGNALS COME FROM IBKR, NOT THE R2 MIRROR. Measured 2026-08-12, every market
+in the mirror was stale by 43-243 days. Using one source for signals AND
+execution also means a position is traded and marked against the same prices
+that generated it.
 """
 from __future__ import annotations
 
@@ -50,7 +80,6 @@ from storage_stress.execution import xsec_signals_ib as SIG
 from storage_stress.execution.xsec_contracts import UniverseResolver
 
 
-# --------------------------------------------------------------------------
 def load_config(root: Path) -> dict:
     """Read the FROZEN spec. Environment overrides only the IBKR endpoint, so
     the strategy parameters cannot drift via environment."""
@@ -94,7 +123,7 @@ def live_agents(cfg: dict) -> list[str]:
         raise ValueError(
             f"signal.live_agents names {unknown}, which are not in "
             f"signal.agents ({declared})")
-    return [a for a in declared if a in wanted]      # keep spec order
+    return [a for a in declared if a in wanted]
 
 
 def per_agent_accounts(cfg: dict) -> bool:
@@ -216,7 +245,6 @@ def connect_ib(cfg: dict, agent: str | None = None,
         + (f" for {agent}" if agent else "") + f": {last}")
 
 
-# --------------------------------------------------------------------------
 def latest_scores(cfg: dict, staleness_days: int = 21):
     """Current factor panel: one row per market with carry / mom / basis_mom.
 
@@ -247,7 +275,6 @@ def latest_scores(cfg: dict, staleness_days: int = 21):
     cutoff = panel_max - pd.Timedelta(days=staleness_days)
     recent = panel[panel["date"] >= cutoff]
 
-    # One row per market: its latest observation inside the window.
     latest = (recent.sort_values("date")
               .groupby("ticker", as_index=False).last())
 
@@ -304,9 +331,8 @@ def account_equity_usd(ib) -> float | None:
         amount = float(row.value)
     except (TypeError, ValueError):
         return None
-    # Paper accounts are often denominated in the user's home currency.
     if (row.currency or "USD").upper() == "CAD":
-        amount *= 0.73                                  # approximate CAD->USD
+        amount *= 0.73
     return amount
 
 
@@ -365,7 +391,6 @@ def agent_leverage(con, agent: str, cfg: dict) -> float:
     return float(min(lev, cfg["portfolio"]["max_leverage"]))
 
 
-# --------------------------------------------------------------------------
 def run_rebalance(root: Path, dry_run: bool = False,
                   agents: list[str] | None = None) -> None:
     """MONTHLY. Compute targets, diff against holdings, trade the difference.
@@ -384,14 +409,13 @@ def run_rebalance(root: Path, dry_run: bool = False,
 
     solo = per_agent_accounts(cfg)
     all_agents = list(cfg["signal"]["agents"])
-    # An explicit --agents wins; otherwise trade whatever the spec marks live.
     runnable = live_agents(cfg)
     if agents:
         unknown = [a for a in agents if a not in all_agents]
         if unknown:
             raise ValueError(f"unknown agent(s) {unknown}; "
                              f"spec defines {all_agents}")
-        agent_names = [a for a in all_agents if a in agents]   # keep spec order
+        agent_names = [a for a in all_agents if a in agents]
         print(f"  agents: {', '.join(agent_names)}  "
               f"(SUBSET — {len(all_agents) - len(agent_names)} not run)")
     else:
@@ -402,35 +426,17 @@ def run_rebalance(root: Path, dry_run: bool = False,
                   f"but not trading)")
     print(f"  account mode: {'per-agent (one paper account each)' if solo else 'shared (all agents, one account)'}")
 
-    # THE SIGNAL CONNECTION. Universe resolution and the factor panel are
-    # identical for every agent -- agents differ only in which factor COLUMNS
-    # they are allowed to read -- so both are computed once, here, and reused.
-    # In per-agent mode this borrows the first RUNNING agent's gateway: the
-    # others' gateways may not exist yet when a subset is being launched.
-    ib_exec = None          # per-agent connection, cleaned up in finally
-    # Pin the SIGNAL connection to the base client id. It borrows the first
-    # agent's gateway, so letting it derive an id would hand it the same one
-    # that agent's execution connection is about to claim -- IBKR rejects the
-    # second with "Error 326: client id is already in use".
+    ib_exec = None
     ib = connect_ib(cfg, agent_names[0] if solo else None,
                     client_id=int(cfg["ibkr"]["client_id"]))
     try:
         res = UniverseResolver(ib, cfg["universe"])
 
-        # --- SIZE AGAINST THE REAL ACCOUNT, NOT THE CONFIGURED ASPIRATION ---
         shared_book = None
         if not solo:
-            # All agents share one account, so each may use at most its share
-            # of the margin capacity.
             equity = account_equity_usd(ib)
             shared_book = size_book(cfg, equity, len(agent_names), "all agents")
 
-        # SIGNALS COME FROM IBKR, NOT THE R2 MIRROR. The mirror is a periodic
-        # snapshot: measured 2026-08-12 every market was stale (43-243 days),
-        # so it cannot drive live decisions. IBKR gives both legs of the term
-        # structure and a year of bars, always current — and using one source
-        # for signals AND execution means a position is traded and marked
-        # against the same prices that generated it.
         panel = SIG.build_live_panel(
             ib, res, cfg["universe"],
             momentum_months=cfg["signal"]["momentum_months"])
@@ -441,7 +447,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
             for _, r in bad.iterrows():
                 print(f"    [skip] {r['ticker']}: {r['status']}")
 
-        # Reusable execution info per market, keyed by ticker.
         market = {r["ticker"]: {
             "details": r["_details"], "expiry": r["expiry"],
             "price": r["front_px"], "multiplier": r["multiplier"],
@@ -451,8 +456,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
 
         for agent in agent_names:
             factors = cfg["signal"]["agents"][agent]
-            # Exclude markets missing any factor this rung needs, rather than
-            # imputing a neutral value (which would rank them on nothing).
             panel_today = SIG.usable(panel, factors)
             if len(panel_today) < cfg["portfolio"]["min_markets"]:
                 print(f"  {agent:<9} only {len(panel_today)} usable markets — "
@@ -465,12 +468,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
                 print(f"  {agent:<9} no targets (cross-section too thin)")
                 continue
 
-            # --- THIS AGENT'S ACCOUNT -------------------------------------
-            # In per-agent mode each rung trades its own paper account through
-            # its own gateway, so the connection and the book size are resolved
-            # here rather than once for the whole run. The contract objects in
-            # `market` were resolved on the signal connection; they are plain
-            # data (conId, exchange, expiry) and remain valid on any session.
             if solo:
                 if ib_exec is not None:
                     ib_exec.disconnect()
@@ -478,19 +475,11 @@ def run_rebalance(root: Path, dry_run: bool = False,
                 try:
                     ib_exec = connect_ib(cfg, agent)
                 except ConnectionError as e:
-                    # A missing or broken gateway must cost ONE agent, not the
-                    # whole rebalance. Rungs come online as their paper
-                    # accounts are opened, so during rollout the later agents'
-                    # gateways legitimately do not exist yet -- and in steady
-                    # state one gateway failing should not stop the other three
-                    # from rebalancing.
                     print(f"  {agent:<9} SKIPPED — {e}")
                     continue
                 book = size_book(cfg, account_equity_usd(ib_exec), 1, agent)
             else:
                 book = shared_book
-            # trade_ib is the session orders actually go through: the agent's
-            # own gateway in per-agent mode, otherwise the shared one.
             trade_ib = ib_exec if solo else ib
 
             lev = agent_leverage(con, agent, cfg)
@@ -500,15 +489,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
             rank_of = {t: i + 1 for i, t in enumerate(ranked["ticker"])}
             score_of = dict(zip(scored["ticker"], scored["score"]))
 
-            # ---------------------------------------------------------------
-            # PASS 1 — PLAN ONLY. No orders are sent here.
-            #
-            # The feasibility check MUST complete before any order goes out.
-            # An earlier version ran this check after the trading loop, so an
-            # agent printed "ABORTED" having already traded and written
-            # positions -- the exact silent divergence the rail exists to
-            # prevent. Plan first, decide, then execute.
-            # ---------------------------------------------------------------
             n_zeroed = 0
             n_wanted = sum(1 for w in wmap.values() if w != 0)
             for ticker, w in wmap.items():
@@ -526,20 +506,14 @@ def run_rebalance(root: Path, dry_run: bool = False,
                       f"book would not be the strategy that was validated.")
                 continue
 
-            # ---------------------------------------------------------------
-            # PASS 2 — EXECUTE. Only reached once the plan is judged tradeable.
-            # ---------------------------------------------------------------
             n_orders = 0
             n_rejected = 0
             rejects: list[str] = []
-            # Union of what we want and what we hold — so exits are included.
             for ticker in set(wmap) | set(held):
                 info = market.get(ticker)
                 w = wmap.get(ticker, 0.0)
 
                 if info is None:
-                    # Cannot price it: leave any existing position alone rather
-                    # than trade blind, and record why.
                     B.record_decision(con, agent, str(today), ticker,
                                       score_of.get(ticker), rank_of.get(ticker),
                                       int(np.sign(w)), w, None,
@@ -554,8 +528,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
 
                 reason = ""
                 if w != 0 and target_contracts == 0:
-                    # Too small to trade at this book. Recorded, not hidden --
-                    # but the >30% case was already caught in pass 1.
                     reason = (f"rounds to 0 contracts "
                               f"(ideal {ideal:.2f}, ${info['notional']:,.0f}/ct)")
 
@@ -579,12 +551,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
                                      action, abs(delta), info["local_symbol"],
                                      result["ib_order_id"], result["status"])
 
-                # THE LEDGER MUST ONLY EVER REFLECT WHAT ACTUALLY FILLED.
-                # Orders get rejected for real reasons -- insufficient margin,
-                # IBKR's near-expiry delivery policy, per-order size caps. If we
-                # wrote the intended position regardless, the books would claim
-                # holdings IBKR does not have, every subsequent mark would be
-                # fiction, and the forward experiment would be silently ruined.
                 filled = float(result["filled"] or 0)
                 if filled <= 0:
                     n_rejected += 1
@@ -600,8 +566,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
                               "" if result["avg_fill_price"] else
                               "fallback=daily close")
 
-                # Position becomes what we HAD plus what actually filled --
-                # never the target, which may have been only partially reached.
                 new_contracts = current + signed_filled
                 if current != 0 and np.sign(new_contracts) != np.sign(current) \
                         and new_contracts != 0:
@@ -626,9 +590,6 @@ def run_rebalance(root: Path, dry_run: bool = False,
                 msg += f"  REJECTED={n_rejected} [{', '.join(rejects[:6])}]"
             print(msg)
     finally:
-        # Disconnect the per-agent session too. Tracking it in a variable
-        # rather than a with-block keeps the cleanup correct on an exception
-        # mid-agent without indenting the whole trading body.
         if ib_exec is not None:
             try:
                 ib_exec.disconnect()
@@ -658,9 +619,6 @@ def place_order(ib, agent: str, ticker: str, info: dict, action: str,
     last_status = "NotSent"
     last_id = None
 
-    # IBKR rejects single non-algo orders above ~64 lots, and the cheap markets
-    # in this universe legitimately need 70-100. Split into child orders rather
-    # than silently dropping the position.
     while remaining > 0:
         lots = min(remaining, MAX_ORDER_LOTS)
         order = MarketOrder(action, lots)
@@ -679,16 +637,15 @@ def place_order(ib, agent: str, ticker: str, info: dict, action: str,
             px_sum += (trade.orderStatus.avgFillPrice or 0) * f
         remaining -= lots
         if f <= 0:
-            break        # rejected: stop trying the rest of the split
+            break
 
     return {"ib_order_id": last_id,
             "status": last_status,
-            "filled": total_filled,                  # 0 when rejected
+            "filled": total_filled,
             "avg_fill_price": (px_sum / total_filled) if total_filled else None,
             "order_ref": order_ref}
 
 
-# --------------------------------------------------------------------------
 def run_mark(root: Path) -> None:
     """DAILY. Price open positions, compute unrealised P&L, record equity."""
     cfg = load_config(root)
@@ -696,11 +653,6 @@ def run_mark(root: Path) -> None:
     today = dt.date.today()
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M}] xsec mark")
 
-    # Marking needs PRICES ONLY — positions come from the local ledger, which
-    # is the source of truth for per-agent attribution. Any gateway returns the
-    # same market data, so we take the FIRST ONE THAT ANSWERS rather than a
-    # fixed choice: during rollout only some gateways exist, and in steady
-    # state one being down must not cost every agent its mark for the day.
     if per_agent_accounts(cfg):
         ib, last_err = None, None
         for candidate in live_agents(cfg):
@@ -732,8 +684,6 @@ def run_mark(root: Path) -> None:
                 info = price_cache.get(ticker)
                 if info is None:
                     continue
-                # Same convention as the ledger's close_position: the magnifier
-                # division is what keeps cents-quoted markets honest.
                 unreal += (pos["contracts"] * (info["price"] - pos["entry_px"])
                            * pos["multiplier"] / pos["magnifier"])
                 gross += abs(pos["contracts"]) * info["notional"]

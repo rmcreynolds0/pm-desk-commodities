@@ -34,10 +34,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-# Bars requested per contract. 1 year covers the 12-month factor windows.
 BAR_DURATION = "1 Y"
-# Minimum bars before a momentum figure is trusted. A newly-listed contract
-# with 20 days of history would otherwise produce a meaningless "12m" return.
 MIN_BARS = 120
 
 
@@ -90,8 +87,6 @@ def build_live_panel(ib, resolver, universe: dict,
             continue
 
         f_px, s_px = float(f_close.iloc[-1]), float(s_close.iloc[-1])
-        # Gap between the two deliveries, in years — carry must be annualised
-        # or markets on different listing cycles are not comparable.
         dt_years = max((second_exp - front_exp).days, 1) / 365.25
 
         mom_f = _period_return(f_close, momentum_months)
@@ -109,7 +104,6 @@ def build_live_panel(ib, resolver, universe: dict,
             "mom_second": mom_s,
             "basis_mom": (None if (mom_f is None or mom_s is None)
                           else mom_f - mom_s),
-            # Carried through so the engine can size without re-querying.
             "multiplier": resolver.multiplier(front_d),
             "magnifier": resolver.price_magnifier(front_d),
             "notional": resolver.notional(front_d, f_px),

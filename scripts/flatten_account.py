@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "src"))
 
-MAX_LOTS = 60          # IBKR non-algo per-order cap
+MAX_LOTS = 60
 
 
 def endpoints(cfg: dict, only: list[str] | None = None
@@ -59,8 +59,6 @@ def endpoints(cfg: dict, only: list[str] | None = None
     from storage_stress.execution import xsec_engine as E
 
     if not E.per_agent_accounts(cfg):
-        # One shared account: a partial flatten is not possible, since all
-        # agents' positions live together and are distinguished only by tag.
         if only:
             print("[note] shared-account mode — --agents cannot flatten a "
                   "subset; all positions in the account will be closed.")
@@ -87,7 +85,6 @@ def flatten_one(label: str, host: str, port: int, confirm: bool,
         ib.connect(host, port, clientId=client_id, timeout=20)
     except Exception as e:                                 # noqa: BLE001
         print(f"  [SKIP] cannot reach this gateway: {e}")
-        # NOT counted as flat: an unreachable gateway may hold positions.
         return (0, -1)
 
     try:
@@ -117,9 +114,6 @@ def flatten_one(label: str, host: str, port: int, confirm: bool,
             qty = abs(int(p.position))
             action = "SELL" if p.position > 0 else "BUY"
 
-            # Contracts from ib.positions() have no `exchange` set, and IBKR
-            # rejects orders without one ("Missing order exchange"). Qualifying
-            # by conId fills in exchange and the rest of the definition.
             contract = p.contract
             try:
                 qualified = ib.qualifyContracts(contract)
@@ -178,8 +172,6 @@ def main() -> int:
 
     total_left, unreachable = 0, 0
     for i, (label, host, port) in enumerate(eps):
-        # Distinct clientId per gateway: reusing one across connections in the
-        # same run makes IBKR drop the earlier session.
         _, left = flatten_one(label, host, port, args.confirm, 51 + i)
         if left < 0:
             unreachable += 1
@@ -190,9 +182,6 @@ def main() -> int:
     print(f"summary: {total_left} position(s) still open across "
           f"{len(eps) - unreachable} reachable account(s)"
           + (f"; {unreachable} gateway(s) UNREACHABLE" if unreachable else ""))
-    # Non-zero exit if anything is still open or a gateway could not be
-    # checked -- the scheduler flattens before launch and must not proceed on
-    # a book it failed to clear.
     return 0 if (total_left == 0 and unreachable == 0) else 1
 
 

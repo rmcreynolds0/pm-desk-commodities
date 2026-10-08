@@ -29,24 +29,11 @@ import pandas as pd
 import requests
 
 EIA_BASE   = "https://api.eia.gov/v2"
-# Credentials come from the environment (.env) ONLY — never hardcoded here.
-# Keys previously carried literal defaults, which would have published working
-# credentials to anyone who cloned the repository. Each fetch function falls
-# back to its seeded synthetic generator when its key is absent, so the repo
-# still runs end-to-end without any credentials at all.
 EIA_KEY    = os.environ.get("EIA_API_KEY", "")
 NOAA_TOKEN = os.environ.get("NOAA_TOKEN", "")
 FRED_KEY   = os.environ.get("FRED_API_KEY", "")
 FRED_BASE  = "https://api.stlouisfed.org/fred"
 
-# ----------------------------------------------------------------------------
-# 1. EIA — weekly storage (the core feed)
-# ----------------------------------------------------------------------------
-# Route:  natural-gas/stor/wkly
-# Series we care about (EIA legacy IDs, still valid as `series` facet values):
-#   NW2_EPG0_SSO_R33_BCF_W  Salt, South Central region, working gas (Bcf)
-#   NW2_EPG0_SNO_R33_BCF_W  Nonsalt, South Central region, working gas (Bcf)
-#   NW2_EPG0_SWO_R48_BCF_W  Lower-48 total working gas (Bcf)
 EIA_STORAGE_SERIES = {
     "salt_south_central": "NW2_EPG0_SSO_R33_BCF",
     "nonsalt_south_central": "NW2_EPG0_SNO_R33_BCF",
@@ -90,10 +77,6 @@ def eia_storage(series_key: str = "salt_south_central",
     return df[["level_bcf", "net_flow_bcf"]].dropna()
 
 
-# ----------------------------------------------------------------------------
-# 2. EIA — Henry Hub spot & futures price (sanity / basis anchor)
-# ----------------------------------------------------------------------------
-# Route: natural-gas/pri/fut  (series RNGC1 = nearest contract, RNGC2 = 2nd, ...)
 def eia_henryhub_futures(contract: int = 1,
                          start: str = "2017-01-01",
                          synthetic: bool | None = None) -> pd.DataFrame:
@@ -123,12 +106,6 @@ def eia_henryhub_futures(contract: int = 1,
     return df[[f"settle_c{contract}"]].dropna()
 
 
-# ----------------------------------------------------------------------------
-# 3. NOAA degree days (demand regime weight) -- via NOAA CDO API
-# ----------------------------------------------------------------------------
-# Token (free): https://www.ncdc.noaa.gov/cdo-web/token  -> env NOAA_TOKEN
-# For the demand regime weight you can also use FRED HDD/CDD series. Synthetic
-# fallback gives a plausible seasonal HDD/CDD curve.
 def noaa_degree_days(start: str = "2017-01-01",
                      synthetic: bool | None = None) -> pd.DataFrame:
     """Weekly heating & cooling degree days (population-weighted, US).
@@ -148,40 +125,11 @@ def noaa_degree_days(start: str = "2017-01-01",
         return _synthetic_degree_days(start)
 
 
-# ----------------------------------------------------------------------------
-# 4. Regional basis (Waha, Dom South) -- REAL via WRDS/Datastream on R2
-# ----------------------------------------------------------------------------
-# BASIS IS A PRICE DIFFERENTIAL:  basis = regional hub price - Henry Hub price.
-# We compute it from its components using Datastream regional hub quotes held in
-# the QUANTT R2 parquet mirror (schema tr_ds_comds).
-#
-# WHY THESE SERIES (search history is documented in docs/FRAMEWORK.md):
-#   The true Waha and Dominion South pricing points are NOT available in any
-#   free source -- confirmed exhaustively against the EIA API (state-level
-#   delivered prices only), IBKR (no basis futures listed), and the WRDS mirror.
-#   What the mirror DOES carry is the Datastream regional hub family, quoted in
-#   $/MMBtu (trading convention, not the $/MCF regulated-delivery convention):
-#
-#     NATGWTX  "Natural Gas, West Texas"        -> Permian Basin  ~ WAHA region
-#     NATGAPP  "Natural Gas, Appala Average"    -> Marcellus/Utica ~ DOM SOUTH region
-#     NGHHSNL  "SNL Natural Gas Henry Hub Day Ahead"  -> the reference leg
-#
-#   These are regional AVERAGES, not the exact Waha / Dominion South points, so
-#   the resulting basis is a close economic proxy rather than the literal series:
-#   West Texas is driven by the same Permian takeaway constraints that define
-#   Waha; Appalachia by the same production glut that defines Dom South.
-#   This approximation is documented, deliberate, and vastly preferable to the
-#   synthetic random walk it replaces (which carried no information at all).
-#
-# STALENESS: the R2 mirror is a periodic snapshot, not a live feed. Callers get
-# whatever the last sync holds; `regional_basis` reports the last date so the
-# engine can flag staleness rather than silently trading on old data.
 DATASTREAM_HUB_SERIES = {
-    # our hub key -> (regional series mnemonic, human description)
     "waha": ("NATGWTX", "Natural Gas, West Texas (Permian ~ Waha region)"),
     "domsouth": ("NATGAPP", "Natural Gas, Appalachia Average (~ Dom South region)"),
 }
-DATASTREAM_HENRY_HUB = "NGHHSNL"   # reference leg for every basis calculation
+DATASTREAM_HENRY_HUB = "NGHHSNL"
 R2_COMMODITY_SCHEMA = "tr_ds_comds"
 
 
@@ -200,14 +148,11 @@ def _r2_duckdb():
         raise RuntimeError(
             "R2 credentials missing from environment/.env: " + ", ".join(missing))
 
-    # DuckDB wants the bare host: no scheme, no trailing slash.
     endpoint = (os.environ["R2_ENDPOINT"].replace("https://", "")
                 .replace("http://", "").rstrip("/"))
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(f"SET s3_endpoint='{endpoint}';")
-    # R2 specifics: region is always 'auto' and it requires PATH-style URLs
-    # (it does not support virtual-host bucket addressing).
     con.execute("SET s3_region='auto';")
     con.execute("SET s3_url_style='path';")
     con.execute("SET s3_use_ssl=true;")
@@ -244,15 +189,6 @@ def _datastream_series(con, mnemonic: str, start: str) -> pd.Series:
     return s
 
 
-# Winsorization bound for basis, in $/MMBtu. Physical-delivery gas markets
-# produce genuine but enormous spikes (Winter Storm Uri, Feb 2021, saw Texas
-# spot gas print $200-400/MMBtu -> a raw basis above +$170). Those points are
-# REAL, not corrupt -- but the DSI residualization runs rolling OLS on FIRST
-# DIFFERENCES, so a single +172 / -172 diff pair produces meaningless
-# coefficients for the entire 3-year window containing it, poisoning dsi_clean
-# for years. Clipping keeps the direction and the "this was extreme" signal
-# while preventing one crisis week from dominating a decade of regressions.
-# Mirrors the pipeline's existing convention of clipping utilization to +-1.2.
 BASIS_CLIP_USD = 10.0
 
 
@@ -281,7 +217,6 @@ def regional_basis(hub: str = "waha",
                          f"{list(DATASTREAM_HUB_SERIES)}")
 
     if synthetic is None:
-        # Auto: prefer real data, but only if R2 credentials are present.
         synthetic = not os.environ.get("R2_ACCESS_KEY_ID")
 
     if synthetic:
@@ -297,7 +232,6 @@ def regional_basis(hub: str = "waha",
     finally:
         con.close()
 
-    # Basis is only defined on days BOTH legs printed -> inner join.
     joined = pd.concat({"regional": regional, "henry": henry},
                        axis=1, join="inner").dropna()
     basis = (joined["regional"] - joined["henry"]).rename(f"{hub}_basis")
@@ -316,13 +250,10 @@ def regional_basis(hub: str = "waha",
     return out
 
 
-# ----------------------------------------------------------------------------
-# 5. IBKR connectivity (trading / paper) via ib_async
-# ----------------------------------------------------------------------------
 @dataclass
 class IBKRConfig:
     host: str = "127.0.0.1"
-    port: int = 4002      # IB Gateway paper = 4002, TWS paper = 7497
+    port: int = 4002
     client_id: int = 11
 
 
@@ -335,12 +266,10 @@ def ibkr_smoke_test(cfg: IBKRConfig | None = None):
     futures is needed for live quotes; delayed data works for testing.
     """
     cfg = cfg or IBKRConfig()
-    from ib_async import IB, Future, util  # imported lazily
+    from ib_async import IB, Future, util
     ib = IB()
     ib.connect(cfg.host, cfg.port, clientId=cfg.client_id, timeout=10)
     try:
-        # Front Henry Hub future. Let IB resolve the front month by leaving
-        # lastTradeDateOrContractMonth empty and qualifying.
         ng = Future(symbol="NG", exchange="NYMEX", currency="USD")
         details = ib.reqContractDetails(ng)
         contracts = sorted(
@@ -362,9 +291,6 @@ def ibkr_smoke_test(cfg: IBKRConfig | None = None):
         ib.disconnect()
 
 
-# ----------------------------------------------------------------------------
-# FRED live fetch for degree days
-# ----------------------------------------------------------------------------
 def _fred_degree_days(start: str) -> pd.DataFrame:
     """Monthly US population-weighted HDD/CDD from FRED, forward-filled to weekly."""
     def _fetch(series_id: str) -> pd.Series:
@@ -390,9 +316,6 @@ def _fred_degree_days(start: str) -> pd.DataFrame:
     return monthly.reindex(weekly_idx, method="ffill").dropna()
 
 
-# ----------------------------------------------------------------------------
-# Synthetic generators (seeded, reproducible) -- used when no key/connection
-# ----------------------------------------------------------------------------
 def _weekly_index(start):
     end = dt.date.today()
     return pd.date_range(start=start, end=end, freq="W-FRI")
@@ -403,7 +326,6 @@ def _synthetic_storage(series_key, start):
     idx = _weekly_index(start)
     n = len(idx)
     t = np.arange(n)
-    # seasonal storage level: low in spring, peak in Nov
     season = 250 + 180 * np.sin(2 * np.pi * (t / 52.0) - 1.4)
     scale = {"salt_south_central": 0.35, "nonsalt_south_central": 1.0,
              "lower48_total": 8.0}.get(series_key, 1.0)
@@ -420,7 +342,6 @@ def _synthetic_price(contract, start):
     n = len(idx)
     base = 3.0 + 0.4 * np.sin(2 * np.pi * np.arange(n) / 252.0)
     shock = rng.normal(0, 0.03, n).cumsum() * 0.1
-    # later contracts are smoother / slightly higher (contango bias)
     settle = base + shock + 0.05 * (contract - 1)
     return pd.DataFrame({f"settle_c{contract}": np.clip(settle, 0.5, None)}, index=idx)
 
@@ -437,14 +358,10 @@ def _synthetic_basis(hub, start):
     rng = np.random.default_rng(7 if hub == "waha" else 9)
     idx = _weekly_index(start)
     n = len(idx)
-    # basis is mean-reverting and (deliberately) correlated with a stress proxy
     level = rng.normal(0, 0.4, n).cumsum() * 0.1
     return pd.DataFrame({f"{hub}_basis": level}, index=idx)
 
 
-# ----------------------------------------------------------------------------
-# Self-test
-# ----------------------------------------------------------------------------
 def run_self_test():
     print("=" * 64)
     print("CONNECTIVITY SELF-TEST", dt.datetime.now().isoformat(timespec="seconds"))

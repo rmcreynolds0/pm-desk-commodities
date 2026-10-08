@@ -71,7 +71,6 @@ def main() -> None:
     print(f"panel: {len(panel):,} rows, {panel['date'].min().date()} -> "
           f"{panel['date'].max().date()}\n")
 
-    # ================= 1. POST-PUBLICATION DECAY =========================
     print("=" * 76)
     print("1. POST-PUBLICATION DECAY  (basis-momentum published 2019)")
     print("=" * 76)
@@ -89,7 +88,6 @@ def main() -> None:
         rows.append(r)
     print(pd.DataFrame(rows).round(3).to_string(index=False))
 
-    # Null band for the post-2019 window, so "positive" can be judged.
     print("\n  null distribution, post-2019 (30 random agents):")
     ns = np.array([run(panel, "agent_0", seed=s, since="2019-01-01")[0]["sharpe"]
                    for s in range(30)])
@@ -99,7 +97,6 @@ def main() -> None:
     print(f"    agent_3 post-2019 = {a3_post:+.3f}  -> "
           f"{(ns < a3_post).mean()*100:.0f}th pctile of chance")
 
-    # ================= 2. VOLATILITY TARGETING ===========================
     print("\n" + "=" * 76)
     print("2. VOLATILITY TARGETING (target 10% annualised)")
     print("=" * 76)
@@ -117,7 +114,6 @@ def main() -> None:
         })
     print(pd.DataFrame(rows).round(3).to_string(index=False))
 
-    # Vol-targeted, post-2019, at 3x cost — the most demanding cut.
     print("\n" + "=" * 76)
     print("3. HARDEST TEST: vol-targeted, post-2019, 3x costs")
     print("=" * 76)

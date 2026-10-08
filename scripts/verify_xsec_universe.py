@@ -47,8 +47,6 @@ def main() -> int:
     book = cfg["capital"]["book_size"]
     quantile = cfg["portfolio"]["quantile"]
 
-    # Per-position budget: a tercile book holds ~2 x (23 * 1/3) ≈ 15 positions,
-    # each targeting book/positions_per_side of gross exposure.
     per_side = max(1, int(round(len(universe) * quantile)))
     budget = book / per_side
     print(f"book ${book:,.0f} · {per_side} positions per side · "
@@ -64,7 +62,7 @@ def main() -> int:
               f"{ib_cfg['host']}:{ib_cfg['port']} — {e}")
         print("        Start IB Gateway in PAPER mode with the API enabled.")
         return 2
-    ib.reqMarketDataType(ib_cfg["market_data_type"])    # delayed-frozen is fine
+    ib.reqMarketDataType(ib_cfg["market_data_type"])
 
     res = UniverseResolver(ib, universe)
     rows = []
@@ -80,8 +78,6 @@ def main() -> int:
         c = details.contract
         mult = res.multiplier(details)
 
-        # Price: use a recent daily bar rather than a live quote — it works
-        # under delayed data and does not need a streaming subscription.
         price = None
         try:
             bars = ib.reqHistoricalData(c, endDateTime="", durationStr="5 D",
@@ -109,12 +105,9 @@ def main() -> int:
     pd.set_option("display.width", 200)
     print(df.to_string(index=False, float_format=lambda v: f"{v:,.2f}"))
 
-    # ---- verdict ---------------------------------------------------------
     ok = df[df["status"] == "ok"]
     no_contract = df[df["status"] == "NO CONTRACT"]
     no_data = df[df["status"] == "NO DATA"]
-    # A market is unusable at this book size if one contract already exceeds
-    # the per-position budget (rounds to 0 contracts).
     too_big = ok[ok["contracts"] < 1.0] if len(ok) else ok
 
     print("\n" + "=" * 74)

@@ -56,7 +56,6 @@ from storage_stress.agents import xsec                      # noqa: E402
 from storage_stress.data import commodities as CM           # noqa: E402
 from storage_stress.data import connectivity as C           # noqa: E402
 
-# The incumbent the challenger has to beat.
 INCUMBENT = "agent_3"
 CHALLENGER = "all_four"
 MIN_EDGE = 0.03
@@ -130,7 +129,6 @@ def main(n_null: int = 200) -> int:
     for a, v in s3.items():
         print(f"      {a:<18} {sharpe[a]:+.3f} -> {v:+.3f} at 3x cost")
 
-    # ---------------- the pre-committed rule ----------------
     edge = sharpe[CHALLENGER] - sharpe[INCUMBENT]
     edge3 = s3[CHALLENGER] - s3[INCUMBENT]
     c1 = sharpe[CHALLENGER] > p95

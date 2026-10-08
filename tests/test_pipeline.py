@@ -15,7 +15,6 @@ def test_synthetic_storage_shape():
 
 
 def test_convex_transform_is_convex_and_signed():
-    # near zero ~ small; near the limit ~ large; sign preserved
     assert convex_stress(pd.Series([0.3])).iloc[0] < convex_stress(pd.Series([0.9])).iloc[0]
     assert convex_stress(pd.Series([-0.9])).iloc[0] < 0
 

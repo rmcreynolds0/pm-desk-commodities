@@ -18,7 +18,7 @@ import pytest
 from storage_stress.execution import xsec_books as B
 from storage_stress.monitoring import publish as P
 
-ACCOUNT_ID = "DUP235180"          # must never appear in the payload
+ACCOUNT_ID = "DUP235180"
 IB_ORDER_ID = 987654321
 
 
@@ -46,7 +46,6 @@ def ledger(tmp_path):
     for a in ("agent_0", "agent_3"):
         B.ensure_agent(con, a, 2_000_000)
 
-    # agent_3 is live; agent_0 is defined but not trading.
     B.set_position(con, "agent_3", "CL", 3, "2026-09-30", 83.17,
                    "CLZ6", "2026-12-15", 1000, 1)
     B.set_position(con, "agent_3", "GC", -1, "2026-09-30", 4425.5,
@@ -54,8 +53,6 @@ def ledger(tmp_path):
     B.set_position(con, "agent_0", "KC", 7, "2026-09-30", 388.4,
                    "KCZ6", "2026-12-18", 37500, 100)
 
-    # A traded decision and an untraded one — the untraded row is the honest
-    # part and must survive into the payload.
     B.record_decision(con, "agent_3", "2026-09-30", "CL", 0.84, 1, 1,
                       0.1429, 3.43, 3, 83.17, 83170.0, "")
     B.record_decision(con, "agent_3", "2026-09-30", "GC", -0.91, 6, -1,
@@ -73,7 +70,6 @@ def ledger(tmp_path):
     con.close()
 
 
-# --- what must NOT leak ----------------------------------------------------
 def test_no_account_identifier_anywhere(ledger, cfg):
     """The ledger never stores an account number, but assert it regardless --
     a future schema change could introduce one silently."""
@@ -102,7 +98,6 @@ def test_no_credential_shaped_keys(ledger, cfg):
         assert bad not in blob
 
 
-# --- scoping to live agents ------------------------------------------------
 def test_only_live_agents_are_published(ledger, cfg):
     """agent_0 exists in the ladder but is not trading. Publishing its empty
     book would imply a four-agent comparison that is not actually running."""
@@ -119,7 +114,6 @@ def test_live_agents_absent_publishes_all(ledger, cfg):
         "agent_0", "agent_1", "agent_2", "agent_3"}
 
 
-# --- content that must be there -------------------------------------------
 def test_untraded_decisions_are_kept(ledger, cfg):
     """The row the book wanted and could not take is the main thing an
     outside reader should be able to check. Hiding it would make the

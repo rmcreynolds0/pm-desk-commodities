@@ -19,24 +19,28 @@ most likely to break a multi-market strategy live:
 The front contract is chosen with the same delivery-guard discipline the NG
 engine uses: nearest expiry more than `guard_days` away, so the book never
 holds into delivery.
+TRAPS
+-----
+priceMagnifier IS READ FROM IBKR, NEVER ASSUMED. Cents-quoted markets
+(grains, softs, cattle) otherwise overstate contract value 100x -- coffee once
+showed as $12.8M per contract instead of $128k, which silently mis-sizes every
+position in that market.
+
+MULTIPLIERS ARE READ FROM IBKR TOO, for the same reason: a wrong multiplier
+does not raise, it just trades the wrong size.
+
+DEFAULT_GUARD_DAYS = 25, raised from 5. IBKR blocks new positions inside its
+delivery window, and the rejections do not say so clearly.
+
+MAX_ORDER_LOTS = 60 against IBKR's 64-lot cap on non-algo futures orders.
+Larger orders are split; unsplit ones are rejected outright.
 """
 from __future__ import annotations
 
 import datetime as dt
 
-# Days before expiry at which a contract stops being tradeable.
-#
-# Raised from 5 to 25 on 2026-08-12: IBKR rejected a copper order 15 days from
-# expiry with "does not comply with our order handling rules for derivatives
-# subject to IBKR near-expiration and physical delivery risk policies". Their
-# policy is stricter than a bare never-take-delivery rule, and for physically
-# delivered commodities it starts biting weeks out. 25 days clears it while
-# still trading the front contract for most of its life.
 DEFAULT_GUARD_DAYS = 25
 
-# IBKR rejects non-algorithmic orders above this size ("too large for us to
-# accept for a non-algorithmic order... not exceeding 64"). Larger targets are
-# split into child orders rather than dropped.
 MAX_ORDER_LOTS = 60
 
 
@@ -53,7 +57,6 @@ class UniverseResolver:
         self.guard_days = guard_days
         self._cache: dict[str, list] = {}
 
-    # ------------------------------------------------------------------ #
     def chain(self, ticker: str) -> list:
         """All listed contracts for one market, sorted by expiry.
 
@@ -84,7 +87,6 @@ class UniverseResolver:
         self._cache[ticker] = []
         return []
 
-    # ------------------------------------------------------------------ #
     def front(self, ticker: str, today: dt.date | None = None):
         """The nearest contract outside the delivery guard.
 
@@ -99,7 +101,6 @@ class UniverseResolver:
                 return d, exp
         return None, None
 
-    # ------------------------------------------------------------------ #
     def front_and_second(self, ticker: str, today: dt.date | None = None):
         """The two nearest tradeable contracts — the term structure we need.
 
@@ -126,7 +127,6 @@ class UniverseResolver:
         except (TypeError, ValueError):
             return None
 
-    # ------------------------------------------------------------------ #
     def price_magnifier(self, details) -> float:
         """How many quoted units make one currency unit.
 
@@ -168,7 +168,6 @@ def _expiry(contract) -> dt.date | None:
         if len(raw) >= 8:
             return dt.date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
         y, m = int(raw[:4]), int(raw[4:6])
-        # Month-only form: treat as end of that month (conservative).
         nxt = dt.date(y + (m == 12), (m % 12) + 1, 1)
         return nxt - dt.timedelta(days=1)
     except (ValueError, TypeError):

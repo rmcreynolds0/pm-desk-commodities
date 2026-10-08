@@ -9,14 +9,12 @@ from storage_stress.data.connectivity import (
     eia_storage, eia_henryhub_futures, IBKRConfig, ibkr_smoke_test
 )
 
-# EIA storage
 try:
     df = eia_storage("salt_south_central")
     print(f"[OK] EIA storage   {len(df)} rows | last={df.index[-1].date()} | level={df.iloc[-1,0]:.1f} Bcf | net_flow={df.iloc[-1,1]:+.1f} Bcf")
 except Exception as e:
     print(f"[FAIL] EIA storage   {e}")
 
-# EIA futures
 try:
     c1 = eia_henryhub_futures(1)
     
@@ -26,7 +24,6 @@ try:
 except Exception as e:
     print(f"[FAIL] EIA futures   {e}")
 
-# IBKR
 try:
     r = ibkr_smoke_test(IBKRConfig(port=4002))
     front  = r["front"]

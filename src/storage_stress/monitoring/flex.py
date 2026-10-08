@@ -60,8 +60,6 @@ SEND = f"{BASE}/SendRequest"
 GET = f"{BASE}/GetStatement"
 VERSION = "3"
 
-# IBKR returns "generation in progress" as an ERROR rather than a status, so it
-# has to be allow-listed or the first poll always looks like a hard failure.
 RETRYABLE = {"1019"}
 
 
@@ -104,8 +102,6 @@ class FlexSnapshot:
                 out[sym] = out.get(sym, 0.0) + float(p.get("position", 0) or 0)
             except (TypeError, ValueError):
                 continue
-        # A zero row is a closed position, not a holding; keeping it would
-        # disagree with a ledger that correctly deleted the row.
         return {k: v for k, v in out.items() if v != 0}
 
 
@@ -123,12 +119,6 @@ def _parse_or_raise(xml_text: str) -> ET.Element:
         msg = (root.findtext("ErrorMessage") or "unknown").strip()
         raise FlexError(code, msg)
 
-    # A statement response (FlexQueryResponse) carries no <Status> at all, so
-    # an empty status is normal there. What is NOT normal is a well-formed
-    # document that is not a Flex response — IBKR serves an HTML maintenance
-    # page during outages, and that parses as valid XML. Without this check it
-    # would sail through as a successful statement holding zero positions, and
-    # reconcile "cleanly" against an empty ledger.
     if root.tag not in {"FlexStatementResponse", "FlexQueryResponse"}:
         raise FlexError("unexpected",
                         f"response root was <{root.tag}>, not a Flex response "
@@ -171,7 +161,7 @@ def fetch_statement(token: str, reference_code: str, url: str = GET,
             if e.code not in RETRYABLE:
                 raise
             last = e
-            time.sleep(delay * i)          # linear backoff; generation is slow
+            time.sleep(delay * i)
     raise FlexError("timeout",
                     f"statement not ready after {attempts} attempts "
                     f"(last: {last})")
@@ -187,7 +177,6 @@ def parse_statement(xml_text: str) -> FlexSnapshot:
         snap.account_id = stmt.get("accountId", "")
         snap.when = f"{stmt.get('fromDate','')}..{stmt.get('toDate','')}"
 
-    # Net asset value: the <EquitySummaryInBase> rows are dated; take the last.
     eq = root.findall(".//EquitySummaryByReportDateInBase")
     if eq:
         try:
@@ -217,7 +206,6 @@ def pull(token: str | None = None, query_id: str | None = None,
     return parse_statement(fetch_statement(token, ref, url, **kw))
 
 
-# ---------------------------------------------------------------------------
 def reconcile(snap: FlexSnapshot, ledger_positions: dict[str, int],
               ) -> dict[str, Any]:
     """Compare what IBKR says we hold against what our ledger claims.

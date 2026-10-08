@@ -51,7 +51,6 @@ import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-# Load .env before importing the package so EIA + R2 credentials are visible.
 load_dotenv(ROOT / ".env")
 
 from storage_stress.agents import (  # noqa: E402
@@ -87,7 +86,6 @@ def build_shared_inputs(settings: dict):
     waha = C.regional_basis("waha", start=start)
     dom = C.regional_basis("domsouth", start=start)
 
-    # DSI depends only on storage + basis, never on the spread. Build it once.
     dsi = build_dsi(salt, settings["signal"]["salt_max_rate_bcf_wk"],
                     waha.iloc[:, 0].resample("W-FRI").last(),
                     dom.iloc[:, 0].resample("W-FRI").last(),
@@ -98,27 +96,16 @@ def build_shared_inputs(settings: dict):
 def run_instrument(name: str, spread_daily: pd.DataFrame, salt: pd.DataFrame,
                    dsi: pd.DataFrame, settings: dict) -> pd.DataFrame:
     """Run all four agents on ONE instrument; return a stats table."""
-    # Weekly (Friday) sampling, aligned to the storage index. limit_area
-    # ="inside" fills interior gaps only -- never flat-extrapolates past the
-    # end of real price data.
     spread = spread_daily["spread"].resample("W-FRI").last()
     spread = spread.reindex(salt.index).interpolate(limit_area="inside").dropna()
 
-    # Weekly roll flag: True if the contract pair changed ANY day that week.
-    # Passed into simulate() so roll-day level jumps are never booked as P&L
-    # (they are splicing artifacts, not tradeable moves) and the position is
-    # closed at the roll -- mirroring the live engine's delivery guard.
     roll_w = (spread_daily["roll"].resample("W-FRI").max()
               .reindex(spread.index).fillna(False).astype(bool))
 
-    # Spread RETURNS used for the vol gate must also exclude phantom roll
-    # moves, otherwise the gate reacts to artifacts rather than real vol.
     spread_ret = spread.diff().mask(roll_w, 0.0)
     spread_vol = spread_ret.rolling(
         settings["signal"].get("vol_window_weeks", 30)).std()
 
-    # The vol regime gate is a property of the TRADED instrument, so it is
-    # recomputed per instrument (inside agent_dsi via spread_ret).
     sizing, costs, entry = settings["sizing"], settings["costs"], settings["entry"]
 
     signals = {
@@ -189,7 +176,6 @@ def main() -> None:
         [run_instrument(inst, spreads[inst], salt, dsi, settings)
          for inst in INSTRUMENTS], ignore_index=True)
 
-    # ---- report -----------------------------------------------------------
     print("\n" + "=" * 78)
     print("RESULTS")
     print("=" * 78)
@@ -204,7 +190,6 @@ def main() -> None:
                   f"{r['total_ret%']:>12.2f}{r['max_dd%']:>10.2f}"
                   f"{r['sharpe']:>9.2f}{r['ci_lo']:>8.2f}{r['ci_hi']:>8.2f}")
 
-    # Pivot: total return by agent x instrument -- the headline comparison.
     print("\n" + "=" * 78)
     print("TOTAL RETURN % — agent (rows) x instrument (cols)")
     print("=" * 78)

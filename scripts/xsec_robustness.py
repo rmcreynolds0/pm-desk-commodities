@@ -65,7 +65,6 @@ def main() -> None:
     print(f"panel: {len(panel):,} rows, "
           f"{panel['date'].min().date()} -> {panel['date'].max().date()}\n")
 
-    # --- 1. COST SENSITIVITY ---------------------------------------------
     print("=" * 74)
     print("1. COST SENSITIVITY (Sharpe at multiples of 10bps/unit turnover)")
     print("=" * 74)
@@ -77,7 +76,6 @@ def main() -> None:
         rows.append(r)
     print(pd.DataFrame(rows).round(3).to_string(index=False))
 
-    # --- 2. SUB-PERIOD STABILITY -----------------------------------------
     print("\n" + "=" * 74)
     print("2. SUB-PERIOD STABILITY (Sharpe by era)")
     print("=" * 74)
@@ -95,7 +93,6 @@ def main() -> None:
     print(pd.DataFrame(rows).round(3).to_string(index=False))
     print("\n  (basis-momentum was published in 2019 — check the last column)")
 
-    # --- 3. IS THE NULL HANDICAPPED BY TURNOVER COSTS? --------------------
     print("\n" + "=" * 74)
     print("3. NULL AT ZERO COST — is random's weakness churn or bad prediction?")
     print("=" * 74)
@@ -105,7 +102,6 @@ def main() -> None:
         a = np.array(sharpes)
         print(f"  random, {label:<10}: mean={a.mean():+.3f}  sd={a.std():.3f}  "
               f"p95={np.percentile(a,95):+.3f}")
-    # And the full signal at zero cost, for a like-for-like comparison.
     print(f"  agent_3, ZERO cost : sharpe="
           f"{run(panel, 'agent_3', 0.0)['sharpe']:+.3f}")
 

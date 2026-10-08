@@ -44,9 +44,6 @@ import pandas as pd
 
 from storage_stress.execution import contracts as C
 
-# Datastream identifies NYMEX Henry Hub natural gas by this exchange ticker.
-# ('NG' is also reused for some interest-rate swap contracts, so we additionally
-# require contrname='NATURAL GAS' and USD to avoid pulling those in.)
 NG_EXCH_TICKER = "NG"
 NG_CONTRACT_NAME = "NATURAL GAS"
 R2_FUTURES_SCHEMA = "tr_ds_fut"
@@ -86,7 +83,6 @@ def ng_contract_chain(con) -> pd.DataFrame:
           AND contrdate IS NOT NULL AND lasttrddate IS NOT NULL
     """).fetchdf()
 
-    # Decode the delivery month; drop rows we cannot parse.
     parsed = df["contrdate"].map(_parse_contrdate)
     keep = parsed.notna()
     df = df[keep].copy()
@@ -94,9 +90,6 @@ def ng_contract_chain(con) -> pd.DataFrame:
     df["delivery_month"] = [p[1] for p in parsed[keep]]
     df["lasttrddate"] = pd.to_datetime(df["lasttrddate"])
 
-    # A delivery month can appear more than once across Datastream's list
-    # databases (ldb COM vs CFA). Keep one row per delivery month — the one
-    # with the LATER expiry is the live listing.
     df = (df.sort_values("lasttrddate")
             .drop_duplicates(subset=["delivery_year", "delivery_month"],
                              keep="last")
@@ -126,7 +119,6 @@ def ng_contract_settlements(con, chain: pd.DataFrame, start: str) -> pd.DataFram
           AND settlement IS NOT NULL
     """).fetchdf()
 
-    # Attach the delivery month to each price row, then pivot.
     key = chain.set_index("futcode")[["delivery_year", "delivery_month"]]
     px = px.join(key, on="futcode")
     px["ym"] = list(zip(px["delivery_year"], px["delivery_month"]))
@@ -136,11 +128,6 @@ def ng_contract_settlements(con, chain: pd.DataFrame, start: str) -> pd.DataFram
     return wide.sort_index()
 
 
-# ---------------------------------------------------------------------------
-# Leg-selection rules. Each takes the tradeable FRONT month and returns the
-# DEFERRED month. Isolating them here is what lets us A/B different traded
-# instruments while holding the signal and execution rules identical.
-# ---------------------------------------------------------------------------
 def _deferred_seasonal(front_ym: tuple[int, int], _d: dt.date):
     """The LOCKED strategy: next January (injection) / next April (withdrawal).
     Delegates to the live engine's own function -- no second implementation."""
@@ -182,7 +169,7 @@ def _front_mar_apr(d: dt.date, tradeable_front: tuple[int, int],
     entire cost argument for a fixed spread.
     """
     year = d.year
-    for _ in range(3):                      # look at most 3 years ahead
+    for _ in range(3):
         cand = (year, 3)
         exp = expiry.get(cand)
         if exp is not None and C.business_days_between(d, exp.date()) > guard_bd:
@@ -233,16 +220,13 @@ def ng_spread(con, definition: str = "seasonal", start: str = "2017-01-01",
     for date in wide.index:
         d = date.date()
 
-        # Nearest contract still trading -> drives the delivery guard.
         nearest = next(((ym, exp) for ym, exp in by_expiry if exp.date() >= d),
                        None)
         if nearest is None:
             continue
 
-        # The tradeable front under the live engine's guard rule.
         front_ym = C.front_delivery_month(d, front_expiry=nearest[1].date(),
                                           guard_bd=guard_bd)
-        # Some definitions (mar_apr) override front selection entirely.
         if front_rule is not None:
             front_ym = front_rule(d, front_ym, expiry, guard_bd)
             if front_ym is None:
@@ -262,14 +246,9 @@ def ng_spread(con, definition: str = "seasonal", start: str = "2017-01-01",
 
     out = pd.DataFrame(rows).set_index("date").sort_index()
 
-    # ROLL FLAG — True whenever the underlying contract pair changed vs the
-    # previous observation. Consumers MUST honour this: the spread level jumps
-    # discontinuously at a roll (measured at 6-14x a normal daily move on real
-    # NG data), and differencing across it fabricates P&L that no trader could
-    # capture. simulate(roll_flag=...) uses it to book zero and force an exit.
     pair = out["front_ym"] + "|" + out["deferred_ym"]
     out["roll"] = pair != pair.shift()
-    out.iloc[0, out.columns.get_loc("roll")] = False   # first obs isn't a roll
+    out.iloc[0, out.columns.get_loc("roll")] = False
 
     out.attrs["source"] = "datastream_r2_tr_ds_fut"
     out.attrs["instrument"] = definition

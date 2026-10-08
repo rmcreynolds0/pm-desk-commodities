@@ -27,6 +27,23 @@ Tables
   positions  one row per (agent, ticker) currently held
   trades     completed round trips
   marks      one row per agent per day: gross notional, unrealised, equity
+TRAPS
+-----
+THIS LEDGER IS THE SOURCE OF TRUTH for per-agent attribution. The broker's
+account mixes every agent together and is useless for it -- worse here than in
+the NG book, because agents often hold OPPOSITE positions in the same market
+that net to zero at account level while both carry real risk.
+
+P&L DIVIDES BY THE MAGNIFIER. Grains, softs and cattle quote in CENTS; omitting
+it reports their P&L 100x too large.
+
+EVERY DECISION IS RECORDED, TRADED OR NOT, with the score and rank that
+produced it and the reason if it was not acted on. That record is the research
+output the project exists to produce; a book that only logs its fills cannot
+be audited.
+
+capital is set on FIRST registration only. Changing the config later must not
+silently rebase an agent's equity history.
 """
 from __future__ import annotations
 
@@ -150,7 +167,6 @@ def capital_of(con, agent: str) -> float:
     return float(row[0]) if row else 0.0
 
 
-# --------------------------------------------------------------------------
 def record_decision(con, agent, rebal_date, ticker, score, rank, side,
                     target_weight, target_contracts, actual_contracts,
                     price, notional, reason="") -> None:
@@ -190,7 +206,6 @@ def record_fill(con, order_id, agent, ticker, price, quantity, note="") -> None:
     con.commit()
 
 
-# --------------------------------------------------------------------------
 def set_position(con, agent, ticker, contracts, entry_date, entry_px,
                  local_symbol, expiry, multiplier, magnifier) -> None:
     """Upsert a position. contracts is SIGNED; zero deletes the row."""
@@ -263,7 +278,6 @@ def record_mark(con, agent, date, n_positions, gross_notional,
     return equity
 
 
-# --------------------------------------------------------------------------
 def equity_curve(con, agent: str) -> pd.DataFrame:
     return pd.read_sql_query(
         "SELECT date, n_positions, gross_notional, unrealized_pnl, "

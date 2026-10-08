@@ -26,9 +26,6 @@ import numpy as np
 import pandas as pd
 import yaml
 
-# Load .env BEFORE importing the package so credentials (EIA key, R2 keys for
-# the real basis feed) are visible to connectivity.py's os.environ lookups.
-# Without this the basis silently falls back to the synthetic generator.
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -66,23 +63,11 @@ def acquire_and_clean(settings):
     print("[1/3] acquiring data")
     salt = C.eia_storage("salt_south_central", start=start, synthetic=False)
 
-    # THE TRADED INSTRUMENT: the seasonal calendar spread (front vs next
-    # January in injection season, front vs next April in withdrawal), built
-    # from individual NYMEX contract settlements and using the SAME
-    # front/deferred month logic as the live engine (execution/contracts.py).
-    #
-    # Previously this used EIA's RNGC1 - RNGC2 (adjacent months) because EIA
-    # only publishes 4 contracts out, while the seasonal deferred leg can be
-    # 9 months out. That made the backtest measure a DIFFERENT, far less
-    # volatile instrument than the live books trade. See docs/FRAMEWORK.md.
     r2 = C._r2_duckdb()
     try:
         seasonal = F.ng_seasonal_spread(r2, start=start)
     finally:
         r2.close()
-    # Basis: REAL Datastream regional hub quotes via the R2 mirror when R2
-    # credentials are present, else the seeded synthetic fallback. See
-    # connectivity.regional_basis for the series mapping and caveats.
     waha = C.regional_basis("waha", start=start)
     dom = C.regional_basis("domsouth", start=start)
     print(f"    storage (REAL)   {len(salt)} rows, {salt.index[0].date()} -> {salt.index[-1].date()}")
@@ -98,16 +83,11 @@ def acquire_and_clean(settings):
           f"  clipped={dom.attrs.get('n_clipped', 0)}")
 
     salt.to_csv(raw_dir / "eia_storage_salt_south_central.csv")
-    # Full audit trail: which contracts produced each spread observation.
     seasonal.to_csv(raw_dir / "ng_seasonal_spread_contracts.csv")
     waha.to_csv(raw_dir / "basis_waha.csv")
     dom.to_csv(raw_dir / "basis_domsouth.csv")
 
     print("[2/3] cleaning / aligning")
-    # Weekly (Friday) sampling of the seasonal spread, then aligned onto the
-    # storage index. limit_area="inside" fills only INTERIOR gaps; plain
-    # .interpolate() would flat-extrapolate trailing NaNs, silently carrying
-    # the last real print forward past the end of the price data.
     spread = seasonal["spread"].resample("W-FRI").last()
     spread = spread.reindex(salt.index).interpolate(limit_area="inside").dropna()
     spread_ret = spread.diff()
@@ -124,7 +104,6 @@ def acquire_and_clean(settings):
         "spread": spread,
         "spread_ret": spread_ret,
         "spread_vol_30w": spread_vol,
-        # Basis is daily; resample to the weekly grid the dataset uses.
         "waha_basis": waha.iloc[:, 0].resample("W-FRI").last(),
         "domsouth_basis": dom.iloc[:, 0].resample("W-FRI").last(),
     }).dropna(subset=["spread"])
@@ -154,11 +133,6 @@ def main():
         k=settings["signal"]["convex_k"],
     )
 
-    # The four-rung information ladder (same order as the live books, so
-    # backtest and live results are directly comparable):
-    #   zero -> one  : adds real storage data
-    #   one  -> two  : adds utilization/convexity/smoothing/deseasonalization
-    #   two  -> dsi  : adds basis residualization + vol regime gate
     agents = {
         "agent_zero": agent_zero(dsi.index, seed=0, trade_every=1),
         "agent_one": agent_one(salt["net_flow_bcf"].reindex(dsi.index),

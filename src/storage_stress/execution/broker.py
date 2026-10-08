@@ -36,31 +36,25 @@ class Broker:
     def __init__(self, host: str, port: int, client_id: int,
                  market_data_type: int = 4, timeout_s: int = 15,
                  retries: int = 3):
-        # Connection parameters come straight from config/live.yaml.
         self.host = host
         self.port = port
         self.client_id = client_id
         self.market_data_type = market_data_type
         self.timeout_s = timeout_s
         self.retries = retries
-        self.ib = None          # set by connect()
-        self._chain = None      # cached contract chain for this session
+        self.ib = None
+        self._chain = None
 
-    # ------------------------------------------------------------------ #
-    # Connection lifecycle
-    # ------------------------------------------------------------------ #
     def connect(self):
         """Connect with retries. Each retry backs off 10s because the usual
         failure mode is 'gateway is mid-restart' which resolves itself."""
-        from ib_async import IB  # lazy import — see module docstring
+        from ib_async import IB
         last_err = None
         for attempt in range(1, self.retries + 1):
             try:
                 self.ib = IB()
                 self.ib.connect(self.host, self.port, clientId=self.client_id,
                                 timeout=self.timeout_s)
-                # Delayed(-frozen) data is fine for weekly decisions & daily
-                # marks, and works without a paid CME market-data subscription.
                 self.ib.reqMarketDataType(self.market_data_type)
                 return self
             except Exception as e:                      # noqa: BLE001
@@ -80,9 +74,6 @@ class Broker:
     def __exit__(self, *exc):
         self.disconnect()
 
-    # ------------------------------------------------------------------ #
-    # Contract resolution
-    # ------------------------------------------------------------------ #
     def ng_chain(self):
         """All listed NG futures sorted by expiry. Cached per session because
         the chain is stable within a job run and the request is slow."""
@@ -105,7 +96,6 @@ class Broker:
         """
         chain = self.ng_chain()
 
-        # The nearest contract's true expiry drives the delivery guard.
         nearest_expiry = _expiry_of(chain[0])
         front_ym = C.front_delivery_month(today, front_expiry=nearest_expiry,
                                           guard_bd=guard_bd)
@@ -119,9 +109,6 @@ class Broker:
                 " — cannot build the seasonal spread.")
         return front, deferred, _expiry_of(front)
 
-    # ------------------------------------------------------------------ #
-    # Historical data -> the live spread series (replaces dead EIA feed)
-    # ------------------------------------------------------------------ #
     def daily_closes(self, contract, duration: str = "2 Y") -> pd.Series:
         """Daily settle/close series for one leg. useRTH + TRADES gives the
         official session closes, which is what the backtest used from EIA."""
@@ -146,9 +133,6 @@ class Broker:
         df = pd.concat({"f": f, "d": d}, axis=1, join="inner")
         return (df["f"] - df["d"]).rename("spread")
 
-    # ------------------------------------------------------------------ #
-    # Orders — the ONLY place orders are created, always orderRef-tagged
-    # ------------------------------------------------------------------ #
     def place_spread_order(self, agent: str, side: int, quantity: int,
                            front, deferred, action: str,
                            wait_s: int = 30) -> dict:
@@ -178,15 +162,10 @@ class Broker:
         ]
 
         order = MarketOrder("BUY", max(int(quantity), 1))
-        # THE attribution mechanism: every fill in the shared paper account
-        # carries this tag. Format: '<agent>|<ENTRY/EXIT>|<iso date>'.
         order.orderRef = f"{agent}|{action}|{dt.date.today().isoformat()}"
 
         trade = self.ib.placeOrder(bag, order)
 
-        # Market orders on liquid NG spreads fill in seconds; poll briefly
-        # rather than blocking forever — the ledger records whatever status
-        # we reach and reconciliation can pick up stragglers later.
         deadline = time.time() + wait_s
         while time.time() < deadline and not trade.isDone():
             self.ib.sleep(1)
@@ -203,16 +182,11 @@ class Broker:
         }
 
 
-# ---------------------------------------------------------------------------
-# Small chain helpers (module-level so they're unit-testable with fakes)
-# ---------------------------------------------------------------------------
 def _expiry_of(contract) -> dt.date:
     """Parse IBKR's lastTradeDateOrContractMonth ('YYYYMMDD' or 'YYYYMM')."""
     raw = contract.lastTradeDateOrContractMonth
     if len(raw) >= 8:
         return dt.date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
-    # Month-only form: assume end-of-prior-month expiry — only used for
-    # sorting/guards where a few days of slack is acceptable & conservative.
     y, m = int(raw[:4]), int(raw[4:6])
     return dt.date(y, m, 1) - dt.timedelta(days=1)
 
@@ -229,9 +203,9 @@ def _find_month(chain, ym: tuple[int, int]):
     code = C.month_code(ym)
     for c in chain:
         raw = c.lastTradeDateOrContractMonth
-        if raw[:6] == code:                      # 'YYYYMM' contract-month form
+        if raw[:6] == code:
             return c
-        if len(raw) >= 8:                        # full expiry date form
+        if len(raw) >= 8:
             exp = dt.date(int(raw[:4]), int(raw[4:6]), 1)
             delivery = (exp.year + (exp.month == 12), (exp.month % 12) + 1)
             if delivery == ym:

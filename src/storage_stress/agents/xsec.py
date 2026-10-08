@@ -25,33 +25,39 @@ silently overwritten, making the backtest cost-free and letting a 250-trade
 coin flip look profitable. Here cost is applied explicitly as
     cost_t = turnover_t * cost_per_unit_turnover
 and turnover is the sum of absolute weight changes.
+TRAPS
+-----
+THE BLEND IS EQUAL-WEIGHT ON PURPOSE. No fitted factor weights. Optimising the
+blend on the same history used to evaluate it is how in-sample fitting returns
+after being designed out everywhere else. Note a side effect: adding a fourth
+factor cuts each existing weight from 1/3 to 1/4, so a new factor must beat the
+AVERAGE of the incumbents to help, not merely be informative.
+
+Z-SCORING IS PER DATE, NOT PER TICKER. Grouping by date is what makes this
+cross-sectional -- the question is "high relative to other markets today", not
+"high relative to its own history".
+
+agent_0 MUST SEE NO DATA. It draws random scores and runs through the identical
+sizing, tercile and cost machinery, which is what makes it a fair null rather
+than a decorative one.
+
+MIN 6 MARKETS. Below that a tercile holds fewer than two names a side, which is
+a bet rather than a factor.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-# Which factor columns each rung is allowed to see. This IS the ladder.
 AGENT_FACTORS: dict[str, list[str]] = {
-    "agent_0": [],                                  # random — sees nothing
+    "agent_0": [],
     "agent_1": ["carry"],
     "agent_2": ["carry", "mom"],
     "agent_3": ["carry", "mom", "basis_mom"],
-    # --- single deliberate variant --------------------------------------
-    # Carry decayed to NEGATIVE post-2017 (Sharpe -0.51 over the last 3
-    # years) while remaining a third of agent_3's blended score. This drops
-    # it. Tested ONCE against a pre-committed decision rule (see
-    # scripts/carry_drop_test.py) -- iterating variants until the number
-    # improves is precisely how in-sample overfitting is manufactured.
     "agent_3_nocarry": ["mom", "basis_mom"],
 
-    # --- STRESS VARIANTS -------------------------------------------------
-    # The natural-gas DSI method generalised to the cross-section (see
-    # data.commodities.add_stress). These are RESEARCH VARIANTS evaluated
-    # against a pre-committed decision rule in scripts/stress_test.py --
-    # they are not rungs of the live ladder unless that test promotes one.
-    "stress_only":  ["stress"],                           # is it a factor at all?
-    "carry_mom_stress": ["carry", "mom", "stress"],       # the literal brief
+    "stress_only":  ["stress"],
+    "carry_mom_stress": ["carry", "mom", "stress"],
     "all_four":     ["carry", "mom", "basis_mom", "stress"],
 }
 
@@ -83,7 +89,6 @@ def score(panel: pd.DataFrame, agent: str, seed: int = 0) -> pd.DataFrame:
         out["score"] = rng.standard_normal(len(out))
         return out
 
-    # Equal-weight blend of the standardised factors this rung can see.
     zs = [_zscore_xs(out, f) for f in factors]
     out["score"] = pd.concat(zs, axis=1).mean(axis=1)
     return out.dropna(subset=["score"])
@@ -104,7 +109,6 @@ def target_weights(scored: pd.DataFrame, quantile: float = 1 / 3) -> pd.DataFram
         k = max(1, int(round(n * quantile)))
         ranked = g.sort_values("score")
         shorts, longs = ranked.head(k), ranked.tail(k)
-        # Each side sums to 1.0 gross => book is +1 long / -1 short, net 0.
         for t in longs["ticker"]:
             rows.append({"date": date, "ticker": t, "w": 1.0 / k})
         for t in shorts["ticker"]:
@@ -132,44 +136,28 @@ def simulate_xsec(panel: pd.DataFrame, weights: pd.DataFrame,
     Returns a daily frame with columns: ret (gross), turnover, cost, ret_net,
     equity.
     """
-    # Forward returns by (date, ticker): what a position held INTO date t earns.
     ret = panel.pivot_table(index="date", columns="ticker", values="front_ret")
 
-    # Rebalance calendar: the last available trading day of each period.
     rebal_dates = (pd.Series(ret.index, index=ret.index)
                    .resample(rebalance).last().dropna().values)
     rebal_dates = pd.DatetimeIndex(rebal_dates)
 
     w_wide = (weights.pivot_table(index="date", columns="ticker", values="w")
               .reindex(columns=ret.columns))
-    # Keep only rebalance dates, then forward-fill to hold between them.
     w_held = w_wide.reindex(rebal_dates).reindex(ret.index).ffill()
-    # Positions are set at the CLOSE of the rebalance date, so they earn from
-    # the NEXT day onward: shift by one to avoid look-ahead.
     w_eff = w_held.shift(1)
 
     gross = (w_eff * ret).sum(axis=1, min_count=1).fillna(0.0)
     turnover = w_held.diff().abs().sum(axis=1).fillna(0.0)
 
-    # --- optional VOLATILITY TARGETING ------------------------------------
-    # The unscaled book runs at whatever vol the market gives it (~22% here),
-    # which produced brutal drawdowns. Scaling exposure to a constant risk
-    # budget is standard practice and usually improves risk-adjusted return by
-    # cutting size in turbulent regimes.
-    #
-    # NO LOOK-AHEAD: leverage for day t uses volatility estimated from returns
-    # up to t-1 only (rolling window, then .shift(1)).
     leverage = pd.Series(1.0, index=gross.index)
     if vol_target is not None:
         realised = gross.rolling(vol_window, min_periods=vol_window // 2).std() \
             * np.sqrt(252)
         lev = (vol_target / realised.shift(1)).replace([np.inf, -np.inf], np.nan)
-        # Cap leverage: an unconstrained inverse-vol rule explodes when a
-        # quiet window precedes a shock. Also fill the warm-up with 1.0.
         leverage = lev.clip(upper=max_leverage).fillna(1.0)
 
     gross_lev = gross * leverage
-    # Turnover scales with position size, so costs scale with leverage too.
     turnover_lev = turnover * leverage
     cost = turnover_lev * cost_per_turnover
     net = gross_lev - cost
