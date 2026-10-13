@@ -117,3 +117,28 @@ def test_order_follows_the_spec_not_the_database(cfg):
     sched, c, db = cfg
     record(db, "agent_2")
     assert sched.agents_needing_launch(c) == ["agent_0", "agent_1", "agent_3"]
+
+
+def test_dry_run_decisions_do_not_mark_an_agent_as_launched(cfg):
+    """A --dry-run writes decision rows but sends no orders. Counting them as
+    "launched" silently disables the launch -- which happened, and cost six
+    days of the scheduler recording zero-equity marks for a book that had
+    never traded. A command documented as safe must not change scheduler
+    behaviour."""
+    sched, c, db = cfg
+    con = B.connect(db)
+    B.ensure_agent(con, "agent_3", 2_000_000)
+    B.record_decision(con, "agent_3", "2026-10-07", "CL", 0.84, 1, 1,
+                      0.14, 3.2, 3, 83.17, 83170.0, "DRY RUN: ")
+    con.close()
+    assert "agent_3" in sched.agents_needing_launch(c)
+
+
+def test_a_real_decision_does_mark_it_launched(cfg):
+    sched, c, db = cfg
+    con = B.connect(db)
+    B.ensure_agent(con, "agent_3", 2_000_000)
+    B.record_decision(con, "agent_3", "2026-10-07", "CL", 0.84, 1, 1,
+                      0.14, 3.2, 3, 83.17, 83170.0, "")
+    con.close()
+    assert "agent_3" not in sched.agents_needing_launch(c)

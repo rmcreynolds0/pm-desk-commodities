@@ -98,6 +98,9 @@ def open_ledger(root: Path, cfg: dict):
     return con
 
 
+DRY_PREFIX = "DRY RUN: "
+
+
 def live_agents(cfg: dict) -> list[str]:
     """Which agents actually TRADE, as opposed to which exist in the spec.
 
@@ -534,7 +537,8 @@ def run_rebalance(root: Path, dry_run: bool = False,
                 B.record_decision(
                     con, agent, str(today), ticker, score_of.get(ticker),
                     rank_of.get(ticker), int(np.sign(w)), w, ideal,
-                    target_contracts, info["price"], info["notional"], reason)
+                    target_contracts, info["price"], info["notional"],
+                    (DRY_PREFIX + reason) if dry_run else reason)
 
                 delta = target_contracts - current
                 if delta == 0:

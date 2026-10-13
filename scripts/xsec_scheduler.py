@@ -92,7 +92,9 @@ def agents_needing_launch(cfg: dict) -> list[str]:
         from storage_stress.execution import xsec_books as B
         con = B.connect(ROOT / cfg["paths"]["books_db"])
         started = {r[0] for r in
-                   con.execute("SELECT DISTINCT agent FROM decisions")}
+                   con.execute(
+                       "SELECT DISTINCT agent FROM decisions "
+                       "WHERE reason NOT LIKE 'DRY RUN:%'")}
         con.close()
         from storage_stress.execution.xsec_engine import live_agents
         return [a for a in live_agents(cfg) if a not in started]
