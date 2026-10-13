@@ -258,7 +258,7 @@ the zero-config secure default.)
 |---------|-------------|
 | Gateway log shows a 2FA / login loop | The login requires phone 2FA — use a paper-only credential (see §0). |
 | `engine` can't connect (connection refused) | Gateway not finished starting, or `IBKR_HOST` not `ib-gateway`. The engine retries; check `docker compose logs ib-gateway`. |
-| Orders warn `Error 10349 (TIF set to DAY)` | Benign — IBKR adjusts the market order's time-in-force; the order still fills. |
+| `Error 10349 (TIF set to DAY)` then **Cancelled** | NOT benign — every order carrying it is cancelled with filled=0. It means the account preset forced TIF=DAY and the market session had ended. Orders now go GTC + outsideRth, but the real fix is to rebalance at 10:30 ET: grains close 14:20, softs ~14:00, livestock 13:05. |
 | **`ABORTED before trading — N/M positions round to 0`** | **The account is too small.** Working as designed. See the sizing table in §4 and raise the paper balance; do not narrow the universe. |
 | Orders rejected near expiry | IBKR blocks new positions inside its delivery window. `DEFAULT_GUARD_DAYS = 25` in `xsec_contracts.py` already rolls past this; if a market still trips it, that market's guard needs raising. |
 | Order rejected for size | IBKR caps non-algo futures orders at 64 lots. The engine splits large orders automatically (`MAX_ORDER_LOTS = 60`). |

@@ -610,6 +610,25 @@ def place_order(ib, agent: str, ticker: str, info: dict, action: str,
     The tag is the attribution mechanism: four agents share one paper account
     and will frequently hold OPPOSITE positions in the same market, which net
     to zero at the account level while both books carry real risk.
+
+    TIF=GTC AND outsideRth=True, BOTH DELIBERATE.
+
+    A market order left at the IBKR default picks up TIF=DAY from the account's
+    order preset, and a DAY order on a market whose session has ended is
+    cancelled immediately rather than queued. Running a rebalance at 14:53 ET
+    cancelled all 12 orders this way -- grains close 14:20, softs ~14:00 and
+    livestock 13:05, so by mid-afternoon most of the universe is shut.
+
+    The error IBKR returns, 10349 "Order TIF was set to DAY based on order
+    preset", reads like a notice and was previously documented in DEPLOY.md as
+    benign. It is not: every order carrying it was cancelled with filled=0.
+
+    GTC survives the session boundary and outsideRth allows the electronic
+    session, so an order placed outside a market's core hours queues instead
+    of dying. This is a safety net, not a licence: the scheduler still
+    rebalances at 10:30 ET, the one window where all 22 markets are liquid
+    together, because queuing an order into a thin session is a worse fill,
+    not a free one.
     """
     from ib_async import MarketOrder
     import time
@@ -627,6 +646,8 @@ def place_order(ib, agent: str, ticker: str, info: dict, action: str,
         lots = min(remaining, MAX_ORDER_LOTS)
         order = MarketOrder(action, lots)
         order.orderRef = order_ref
+        order.outsideRth = True
+        order.tif = "GTC"
         trade = ib.placeOrder(info["details"].contract, order)
 
         deadline = time.time() + 20
