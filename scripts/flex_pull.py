@@ -106,6 +106,27 @@ def main() -> int:
           f"{len(snap.trades)} trade(s) in the period")
 
     rec = flex.reconcile(snap, ledger_positions(cfg))
+
+    # A statement whose period ends before today cannot describe today's book,
+    # so comparing it to a live ledger produces a mismatch that means nothing.
+    # This is the default trap: IBKR's "Last Business Day" period excludes
+    # everything traded today, giving zero rows and an alarming-looking diff
+    # against a perfectly correct ledger.
+    stale = False
+    try:
+        end = (snap.when or "").split("..")[-1]
+        if len(end) == 8:
+            stale = dt.date(int(end[:4]), int(end[4:6]), int(end[6:])) < dt.date.today()
+    except (ValueError, TypeError):
+        pass
+
+    if stale:
+        print(f"\n  [STALE PERIOD] statement covers {snap.when}, which ends "
+              f"before today ({dt.date.today()}).")
+        print("  Any difference below is a period mismatch, NOT a reconciliation")
+        print("  failure. Set the Flex query's Period to 'Last 30 Days' so the")
+        print("  window includes today, then re-run.")
+
     print(f"\n  broker holds {rec['n_broker']} symbol(s); "
           f"ledger claims {rec['n_ledger']}")
 
