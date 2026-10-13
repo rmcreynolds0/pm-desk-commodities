@@ -28,7 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -116,13 +116,13 @@ def main() -> int:
     try:
         end = (snap.when or "").split("..")[-1]
         if len(end) == 8:
-            stale = dt.date(int(end[:4]), int(end[4:6]), int(end[6:])) < dt.date.today()
+            stale = date(int(end[:4]), int(end[4:6]), int(end[6:])) < date.today()
     except (ValueError, TypeError):
         pass
 
     if stale:
         print(f"\n  [STALE PERIOD] statement covers {snap.when}, which ends "
-              f"before today ({dt.date.today()}).")
+              f"before today ({date.today()}).")
         print("  Any difference below is a period mismatch, NOT a reconciliation")
         print("  failure. Set the Flex query's Period to 'Last 30 Days' so the")
         print("  window includes today, then re-run.")
