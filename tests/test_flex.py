@@ -166,3 +166,29 @@ def test_missing_credentials_name_what_is_missing(monkeypatch):
     with pytest.raises(flex.FlexError) as e:
         flex.pull()
     assert "FLEX_TOKEN" in str(e.value)
+
+
+def test_warn_status_is_not_success():
+    """IBKR signals "statement generation in progress" with Status=Warn, not
+    Fail. Treating Warn as success made fetch_statement return the in-progress
+    stub immediately instead of retrying -- so it parsed an empty document and
+    the reconciliation reported the broker holding nothing, against a ledger
+    with four live positions. A false mismatch is as damaging as a false
+    match: it sends you hunting a bug that is not there."""
+    warn = ("<FlexStatementResponse><Status>Warn</Status>"
+            "<ErrorCode>1019</ErrorCode>"
+            "<ErrorMessage>Statement generation in progress.</ErrorMessage>"
+            "</FlexStatementResponse>")
+    with pytest.raises(flex.FlexError) as e:
+        flex._parse_or_raise(warn)
+    assert e.value.code == "1019"
+    assert e.value.code in flex.RETRYABLE
+
+
+def test_any_error_code_raises_even_without_a_fail_status():
+    """Defensive: an ErrorCode present at all means this is not a statement."""
+    body = ("<FlexStatementResponse><Status>Success</Status>"
+            "<ErrorCode>1234</ErrorCode><ErrorMessage>odd</ErrorMessage>"
+            "</FlexStatementResponse>")
+    with pytest.raises(flex.FlexError):
+        flex._parse_or_raise(body)

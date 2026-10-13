@@ -113,11 +113,12 @@ def _parse_or_raise(xml_text: str) -> ET.Element:
     except ET.ParseError as e:
         raise FlexError("parse", f"response was not XML: {e}") from e
 
-    status = (root.findtext("Status") or "").strip()
-    if status.lower() == "fail":
-        code = (root.findtext("ErrorCode") or "?").strip()
+    status = (root.findtext("Status") or "").strip().lower()
+    code = (root.findtext("ErrorCode") or "").strip()
+
+    if status in ("fail", "warn") or code:
         msg = (root.findtext("ErrorMessage") or "unknown").strip()
-        raise FlexError(code, msg)
+        raise FlexError(code or "?", msg)
 
     if root.tag not in {"FlexStatementResponse", "FlexQueryResponse"}:
         raise FlexError("unexpected",
