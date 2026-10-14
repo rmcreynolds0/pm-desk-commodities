@@ -116,7 +116,12 @@ def main() -> int:
     try:
         end = (snap.when or "").split("..")[-1]
         if len(end) == 8:
-            stale = date(int(end[:4]), int(end[4:6]), int(end[6:])) < date.today()
+            # Flex Activity statements are built from IBKR's END-OF-DAY
+            # processing, so a window ending YESTERDAY is normal and healthy,
+            # not stale. Only flag a gap of more than one day -- warning on
+            # the expected case is how a guard becomes noise people ignore.
+            gap = (date.today() - date(int(end[:4]), int(end[4:6]), int(end[6:]))).days
+            stale = gap > 1
     except (ValueError, TypeError):
         pass
 
