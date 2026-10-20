@@ -21,25 +21,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# install with: pip install -e ".[live]"
+# pip install -e ".[live]"       IBKR execution
 live = [
-    "ib_async>=2.0.1",   # IBKR paper/live execution (successor to the unmaintained ib_insync)
+    "ib_async>=2.0.1",
 ]
-# install with: pip install -e ".[dashboard]"  (the Streamlit portfolio UI)
+# pip install -e ".[dashboard]"  Streamlit views
 dashboard = [
     "streamlit>=1.35",
     "plotly>=5.20",
 ]
-# install with: pip install -e ".[dev]"
+# pip install -e ".[docs]"       markdown -> PDF via headless Chromium
+docs = [
+    "markdown",
+    "playwright",
+]
+# pip install -e ".[dev]"
 dev = [
     "pytest",
     "ruff",
-    "nbformat",
-    "nbclient",
-    "ipykernel",
-    "jupyter",
     "pre-commit",
 ]
+
 
 [build-system]
 requires = ["setuptools>=61"]
