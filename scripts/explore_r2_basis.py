@@ -8,7 +8,7 @@ GOAL
 Find out whether the WRDS R2 mirror carries the regional natural-gas hub
 prices we need to build Waha / Dominion South BASIS (hub price minus Henry
 Hub), which would replace the SYNTHETIC basis currently feeding agent_dsi's
-residualization step (gap #2 in docs/FRAMEWORK.md).
+residualization step .
 
 Basis is a PRICE differential ($/MMBtu), not a flow/capacity number — so we
 look in the EIA energy-PRICE schema `doe_all` (and, secondarily, the

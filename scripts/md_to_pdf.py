@@ -24,9 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "pdf"
 
 DEFAULT_DOCS = [
-    (ROOT / "docs" / "01_TECHNICAL_INFRASTRUCTURE.md", False),
-    (ROOT / "docs" / "02_PROJECT_INTRO_HIRING.md", True),
-    (ROOT / "docs" / "03_SUMMER_RESULTS.md", False),
+    (ROOT / "docs" / "TECHNICAL.md", False),
+    (ROOT / "docs" / "05_STRATEGY_PAPER.md", False),
 ]
 
 COMPACT_CSS = """

@@ -55,7 +55,7 @@ if [ -n "$UNHEALTHY" ]; then
   echo "  Unhealthy:$UNHEALTHY"
   echo "  Usual causes: a 2FA prompt the headless login cannot answer, or the"
   echo "  same IBKR username reused on two gateways (they disconnect each"
-  echo "  other). See docs/DEPLOY.md section 0."
+  echo "  other). See docs/TECHNICAL.md deployment section."
   for n in $UNHEALTHY; do
     echo "  --- ib-gateway-$n, last 8 lines ---"
     docker compose logs --tail 8 "ib-gateway-$n" 2>/dev/null | sed 's/^/    /'

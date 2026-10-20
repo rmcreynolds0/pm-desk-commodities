@@ -8,7 +8,7 @@
 # in-sample fitting with extra steps.
 #
 # RULE: changing any value here invalidates the forward test from that date.
-# If a change is genuinely warranted, record it in docs/PIVOT_A_STRATEGY.md
+# If a change is genuinely warranted, record it in docs/05_STRATEGY_PAPER.md
 # with the date and reason, and treat the forward record as restarting.
 #
 # Research results this spec produced (2000-2026 backtest):
@@ -46,7 +46,7 @@ universe:
   # remaining 22 markets so the forward comparison is like-for-like.
   #
   # A further narrowing to 17 markets was tested and REJECTED — see
-  # docs/SUMMER_SUMMARY.md §6. Dropping GC/HO/GF/HG/PA made carry stop beating
+  # docs/TECHNICAL.md. Dropping GC/HO/GF/HG/PA made carry stop beating
   # chance and worsened drawdown by 17 points. The account is sized to the
   # universe, not the universe to the account.
   # --- softs (ICE US / NYBOT) ---
@@ -169,7 +169,7 @@ ibkr:
   # agents that yields (1e6 * 0.50) / (2 * 4 * 0.12) = $520,833 per agent, at
   # which GC, HO, GF and HG round to zero contracts and drop out — four of the
   # five markets whose removal was already tested and REJECTED (see §6 of
-  # docs/SUMMER_SUMMARY.md: carry stopped beating chance, drawdown −36% →
+  # docs/TECHNICAL.md: carry stopped beating chance, drawdown −36% →
   # −53%). The shared layout would silently recreate the rejected universe.
   #
   # One account per agent removes the n_agents divisor:

@@ -4,7 +4,7 @@ test_execution.py — unit tests for the live-trading layer's PURE logic.
 Deliberately no broker, no network, no IB Gateway: contracts.py is pure
 calendar math, books.py runs on a temp SQLite file, marks.py is arithmetic,
 and agent_two runs on synthetic series. The broker/engine integration is
-exercised by the smoke run against IB Gateway (docs/FRAMEWORK.md §deploy),
+exercised by the smoke run against IB Gateway (the retired NG framework),
 not by unit tests — mocking ib_async here would only test the mock.
 """
 from __future__ import annotations

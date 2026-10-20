@@ -1,48 +1,42 @@
-# QUANTT Commodities — cross-sectional futures research
+# pm-desk-commodities
 
-A systematic commodity futures strategy running live on IBKR paper, built
-around an unusual constraint: **every claim has to beat a random agent before
-it counts.**
+Cross-sectional commodity futures strategy. 22 markets, long/short,
+dollar-neutral, monthly rebalance. Runs live on IBKR paper.
 
-The book ranks 22 commodity futures against each other on carry, momentum and
-basis-momentum, holds the top third long against the bottom third short,
-dollar-neutral, rebalanced monthly. Over 2000–2026 that earns Sharpe 0.553 at
-the 99.5th percentile of a 200-seed null distribution.
+Sharpe 0.553 over 2000–2026, 99.5th percentile of a 200-seed null distribution.
 
-## The part worth knowing first
+---
 
-**This project retired its own first strategy.** Half of summer 2026 went into
-a natural-gas calendar-spread model driven by a Deliverability Stress Index.
-Its own pre-registered regime test falsified the hypothesis behind it — the
-volatility it needed to rise had fallen 29%, and mean reversion had gone to
-zero. Three separate bugs had been making the backtest look profitable.
+## Strategy
 
-That code is still here. It is the evidence behind the decision, and deleting
-it would delete the proof. See `docs/SUMMER_SUMMARY.md`.
+Markets are ranked against each other on three factors derived from the futures
+curve. The top third is held long, the bottom third short, equally weighted
+within each side.
 
-The naming convention tells you which is which:
-
-| Convention | Strategy | Status |
+| Factor | Definition | Measures |
 |---|---|---|
-| `agent_zero`, `agent_one`, `agent_dsi` | Natural gas calendar spreads | **Retired** |
-| `agent_0` … `agent_3` | Cross-sectional commodities | **Live** |
+| Carry | `ln(F₁/F₂) / Δt` | Curve slope |
+| Momentum | 12-month return of `F₁` | Price trend |
+| Basis-momentum | `mom(F₁) − mom(F₂)` | Curve shape change |
 
-## The agent ladder
+Factors are z-scored cross-sectionally within each date and combined with equal
+weights. Volatility targeted to 10% annualised, leverage capped at 3×.
+
+### Agent ladder
 
 Four agents run on identical machinery, differing only in which factors they
-may read. `agent_0` trades at random. Each rung above sees exactly one more
-piece of information, so the gap between two adjacent rungs measures what that
-one factor contributes.
+read.
 
-| Agent | Sees | Sharpe | vs chance |
+| Agent | Factors | Sharpe | vs null |
 |---|---|---|---|
-| `agent_0` | random — nothing | 0.08 | — |
+| `agent_0` | none (random) | 0.08 | — |
 | `agent_1` | carry | 0.24 | 98th pctile |
-| `agent_2` | + momentum | 0.40 | 100th |
-| **`agent_3`** | **+ basis-momentum** | **0.553** | **99.5th** |
+| `agent_2` | + momentum | 0.36 | 100th |
+| `agent_3` | + basis-momentum | 0.553 | 99.5th |
 
-Only `agent_3` trades live today — each agent needs its own IBKR paper
-account, and IBKR caps those at $1,000,000. See `config/xsec.yaml`.
+`agent_3` trades live. The others require additional IBKR paper accounts.
+
+---
 
 ## Quick start
 
@@ -50,71 +44,91 @@ account, and IBKR caps those at $1,000,000. See `config/xsec.yaml`.
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev,dashboard,live]"
 
-pytest -q                          # 75 tests
-python scripts/run_xsec.py 200     # reproduces the ladder + a 200-seed null
-streamlit run dashboard/pivot_a.py # research dashboard
+pytest -q                          # 83 tests
+python scripts/run_xsec.py 200     # ladder + 200-seed null
+streamlit run dashboard/pivot_a.py   # research views
 ```
 
-Your ladder numbers must match `docs/03_SUMMER_RESULTS.md`. If they don't,
-say so — a reproducibility gap is a finding, not a nuisance.
+Backtests read a historical mirror from Cloudflare R2 and require credentials
+in `.env`. Live trading does not: signals are computed from IBKR.
 
-Backtests read a historical mirror from Cloudflare R2 and need credentials in
-`.env`. **Live trading needs none of that** — signals come from IBKR itself,
-because the mirror was measured stale by 43–243 days per market.
+---
+
+## Deployment
+
+```bash
+git clone https://github.com/rmcreynolds0/pm-desk-commodities.git storage-stress
+cd storage-stress
+bash deploy/bootstrap.sh
+```
+
+Requires an x86-64 host (IB Gateway has no ARM build) and an IBKR paper login
+without phone 2FA. See `docs/TECHNICAL.md`.
+
+---
 
 ## Layout
 
 ```
-storage-stress/
-├── config/xsec.yaml            FROZEN live spec — changing it invalidates
-│                               the forward test from that date
-├── src/storage_stress/
-│   ├── data/                   commodities.py (factors), connectivity.py (feeds)
-│   ├── signal/dsi.py           the retired gas pipeline — still used by add_stress
-│   ├── agents/
-│   │   ├── xsec.py             LIVE: the ladder, scoring, tercile weights
-│   │   └── agents.py           RETIRED: the gas agents
-│   ├── execution/              xsec_* = live; the rest is the gas engine
-│   └── monitoring/             publish.py (public snapshot), flex.py (dormant)
-├── scripts/                    run_xsec* = live; run_agents/run_daily = retired
-├── deploy/bootstrap.sh         bare VM -> running stack, one command
-├── dashboard/
-│   ├── xsec_live.py            LIVE ledger
-│   └── pivot_a.py              RESEARCH backtest artifacts
-└── docs/                       see below
+config/xsec.yaml            Frozen strategy specification
+src/storage_stress/
+  data/commodities.py       Panel construction, factor computation
+  data/connectivity.py      External feeds, R2 mirror (research only)
+  agents/xsec.py            Ladder, scoring, portfolio weights
+  execution/xsec_engine.py  Live rebalance and mark
+  execution/xsec_books.py   SQLite ledger
+  execution/xsec_contracts.py  IBKR contract resolution
+  monitoring/flex.py        Broker reconciliation
+scripts/                    CLIs and research drivers
+deploy/                     Provisioning, status, backup
+dashboard/                  Streamlit views
+tests/                      pytest
 ```
 
-## Documentation
-
-| Document | What it covers |
-|---|---|
-| `01_TECHNICAL_INFRASTRUCTURE.md` | How the code fits together |
-| `02_PROJECT_INTRO_HIRING.md` | Roles, requirements, timeline |
-| `03_SUMMER_RESULTS.md` | What was found, with evidence |
-| `04_ONBOARDING_PACKAGE.md` | First-fortnight path, accounts, budget |
-| `DEPLOY.md` | Always-on deployment |
-| `SUMMER_SUMMARY.md` | The gas strategy and why it was retired |
-| `PIVOT_A_STRATEGY.md` | How the current strategy works |
-| `STRESS_FACTOR.md` | A factor that was tested and **rejected** |
-
-## Conventions worth keeping
-
-- **Nothing is a result until it beats a null distribution.** One random path
-  is an anecdote; 200 are a benchmark. A +26.3% result that looked like signal
-  turned out to be the 95th percentile of chance.
-- **Pre-commit the decision rule**, in the file, before running the test.
-  `scripts/stress_test.py` and `scripts/carry_drop_test.py` both do this, and
-  both rejected the thing they were testing.
-- **`config/*.yaml` is frozen while the forward test runs.** Changing a
-  parameter mid-test turns out-of-sample into in-sample with extra steps.
-- **Secrets live in `.env` only.** Never hardcode a key as a default value —
-  this repo once carried literal EIA and NOAA keys as fallbacks.
-- **Returns are roll-safe**: computed only between two prices of the *same*
-  contract. Splicing fabricated up to 31% of all measured movement.
-- Logic lives in `src/` and is tested; `scripts/` are thin wrappers;
-  notebooks only look at things.
+Two strategies exist in this repository. `agent_0`–`agent_3` and `xsec_*`
+filenames are the live cross-sectional strategy. `agent_zero`, `agent_one`,
+`agent_dsi` and un-prefixed filenames are the retired natural-gas strategy,
+kept as the record behind its retirement.
 
 ---
 
-*Paper trading throughout. Backtest figures are simulated; forward figures
-come from the live IBKR paper ledger. No capital is at risk.*
+## Operations
+
+| Job | Schedule |
+|---|---|
+| Rebalance | Last business day, 10:30 ET |
+| Mark | Weekdays, 16:30 ET |
+| Ledger backup | Daily, 02:30 ET |
+
+```bash
+python scripts/run_xsec_live.py --job rebalance --dry-run
+python scripts/run_xsec_live.py --job status
+bash deploy/status.sh
+```
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| `docs/TECHNICAL.md` | Markets, contracts, signals, module and script inventory, deployment |
+| `docs/05_STRATEGY_PAPER.md` | Market mechanics, factor derivation, methodology |
+
+PDFs in `docs/pdf/`, regenerated with `python scripts/md_to_pdf.py <file>`.
+
+---
+
+## Conventions
+
+- Returns are computed only between two prices of the same contract.
+- Factor weights are equal and not fitted.
+- `config/xsec.yaml` is frozen while the forward test runs.
+- The ledger records filled quantities, not intended ones.
+- Contract multipliers and price magnifiers are read from IBKR at runtime.
+- Credentials live in `.env`, which is gitignored.
+
+---
+
+Paper trading. Backtest figures are simulated; forward figures come from the
+IBKR paper ledger. No capital is at risk.

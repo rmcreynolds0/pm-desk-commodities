@@ -160,7 +160,7 @@ def test_unreadable_equity_falls_back_to_configured_book():
 
 
 def test_sizing_formula_matches_documented_thresholds():
-    """The numbers quoted in docs/DEPLOY.md must come from this same formula."""
+    """The numbers quoted in docs/TECHNICAL.md must come from this same formula."""
     cfg = base_cfg()
     cfg["capital"]["book_size"] = 10_000_000
     assert E.size_book(cfg, 19_200_000, 4, "doc") == pytest.approx(10_000_000)

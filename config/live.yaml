@@ -93,7 +93,7 @@ data:
   spread_vol_window_weeks: 30   # rolling std window for inverse-vol sizing
   # Basis inputs for agent_dsi's residualization step. "synthetic" keeps the
   # seeded random-walk placeholder (documented hybrid mode) until a real
-  # Waha / Dom South feed is wired in (see docs/FRAMEWORK.md gap table).
+  # Waha / Dom South feed is wired in .
   basis_mode: "synthetic"
 
 paths:

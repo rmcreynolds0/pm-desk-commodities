@@ -44,7 +44,7 @@ are not comparable until normalised.
 
 add_stress PORTS THE RETIRED GAS METHOD AND WAS REJECTED. It is kept because
 scripts/stress_test.py uses it as the evidence behind that rejection; it is not
-in the live blend. See docs/STRESS_FACTOR.md.
+in the live blend. See docs/TECHNICAL.md.
 """
 from __future__ import annotations
 

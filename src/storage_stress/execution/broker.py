@@ -10,7 +10,7 @@ Responsibilities (and deliberately nothing more):
   3. pull daily historical bars for both legs and build the SPREAD SERIES —
      this doubles as the live price feed, replacing the EIA RNGC1/RNGC2
      series that EIA discontinued in April 2024 (data gap #1 in
-     docs/FRAMEWORK.md),
+    ,
   4. place 2-leg BAG combo orders TAGGED with orderRef=<agent name> — the
      tag is what attributes every fill in the shared paper account to
      exactly one agent's book.

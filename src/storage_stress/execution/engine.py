@@ -18,7 +18,7 @@ Two jobs, both idempotent and safe to re-run:
       (equity = capital + realized + unrealized), including for flat agents
       so every book has a continuous daily equity curve.
 
-DATA FLOW AT DECISION TIME (see docs/FRAMEWORK.md for the diagram):
+DATA FLOW AT DECISION TIME :
     EIA API  ── weekly salt storage level/net flow ──┐
     IBKR     ── daily bars for front+deferred legs ──┼─> weekly aligned frame
     synthetic── Waha / Dom South basis (gap #2)     ──┘        │

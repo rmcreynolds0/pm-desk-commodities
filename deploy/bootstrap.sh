@@ -348,7 +348,7 @@ echo "     Read the [SIZING] line. You want to see:"
 echo "       \"book \$10,000,000/agent is within capacity\""
 echo "     If it names a smaller number, raise the IBKR paper balance:"
 echo "       Client Portal -> Settings -> Paper Trading Account Reset -> Other"
-echo "     \$10M/agent needs about \$19.2M of paper equity. See docs/DEPLOY.md."
+echo "     \$10M/agent needs about \$19.2M of paper equity. See docs/TECHNICAL.md."
 echo
 if [ "$DASH" = "no" ]; then
 echo "  2. No dashboard on this host (too little RAM). Check status with:"

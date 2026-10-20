@@ -1,5 +1,5 @@
 # Non-secret configuration. Secrets live in .env.
-# These are the PRE-REGISTERED strategy parameters (see docs/LOCKED_STRATEGY.md).
+# These are the PRE-REGISTERED strategy parameters .
 # Changing a value here changes the strategy without touching code — keep this
 # file under version control so every parameter change is auditable.
 
