@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "pdf"
 
 DEFAULT_DOCS = [
+    (ROOT / "docs" / "MASTER.md", False),
+    (ROOT / "docs" / "PRIMER.md", False),
     (ROOT / "docs" / "TECHNICAL.md", False),
     (ROOT / "docs" / "05_STRATEGY_PAPER.md", False),
 ]

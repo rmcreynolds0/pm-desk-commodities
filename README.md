@@ -112,8 +112,10 @@ bash deploy/status.sh
 
 | Document | Contents |
 |---|---|
-| `docs/TECHNICAL.md` | Markets, contracts, signals, module and script inventory, deployment |
+| `docs/MASTER.md` | All of the below, as one document |
+| `docs/PRIMER.md` | Contract behaviour and the three signals, from scratch |
 | `docs/05_STRATEGY_PAPER.md` | Market mechanics, factor derivation, methodology |
+| `docs/TECHNICAL.md` | Contract specifications, code inventory, deployment |
 
 PDFs in `docs/pdf/`, regenerated with `python scripts/md_to_pdf.py <file>`.
 
