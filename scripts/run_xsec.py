@@ -13,10 +13,17 @@ chance. Its own confidence interval is not sufficient evidence.
 
 Usage:
     python scripts/run_xsec.py [n_null_seeds]
+
+Output: each run writes to its own folder, data/processed/backtests/<timestamp>/
+(ladder, equity curves, null distribution, run_info.json). The committed
+data/processed/xsec_*.csv files are never touched.
 """
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +45,18 @@ LABELS = {
     "agent_2": "carry + momentum",
     "agent_3": "carry + mom + basis-mom",
 }
+
+
+def _git_commit() -> str:
+    """Commit the run was made from, with '-dirty' if the tree had changes."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                             capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                               capture_output=True, text=True, check=True).stdout.strip()
+        return sha + ("-dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 def main(n_null: int = 100) -> None:
@@ -121,11 +140,26 @@ def main(n_null: int = 100) -> None:
               f"-> {pct:5.1f}th pctile of chance  "
               f"{'** BEATS CHANCE **' if beats else 'within noise'}")
 
-    out_dir = ROOT / settings["paths"]["data_processed"]
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Each run gets its own folder so the committed research outputs in
+    # data/processed/ (which the dashboard reads) are never overwritten.
+    # Subfolders of data/processed/ are gitignored, so runs stay local.
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = ROOT / settings["paths"]["data_processed"] / "backtests" / run_id
+    out_dir.mkdir(parents=True, exist_ok=False)
     stats.to_csv(out_dir / "xsec_ladder.csv", index=False)
     pd.DataFrame(curves).to_csv(out_dir / "xsec_equity_curves.csv")
-    print(f"\nresults -> {out_dir / 'xsec_ladder.csv'}")
+    pd.DataFrame({"seed": range(n_null), "sharpe": ns, "ann_ret%": nr}).to_csv(
+        out_dir / "null_distribution.csv", index=False)
+    meta = {
+        "run_id": run_id,
+        "n_null_seeds": n_null,
+        "data_start": str(px["date"].min().date()),
+        "data_end": str(px["date"].max().date()),
+        "null_sharpe_p95": float(p95_s),
+        "git_commit": _git_commit(),
+    }
+    (out_dir / "run_info.json").write_text(json.dumps(meta, indent=2))
+    print(f"\nresults -> {out_dir}")
 
 
 if __name__ == "__main__":

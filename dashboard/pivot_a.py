@@ -50,13 +50,38 @@ st.warning(
 
 
 @st.cache_data(ttl=30)
-def load(name: str):
-    p = PROC / name
+def load(folder: str, name: str):
+    p = Path(folder) / name
     return pd.read_csv(p) if p.exists() else None
 
 
-ladder = load("xsec_ladder.csv")
-curves = load("xsec_equity_curves.csv")
+# Source picker: the committed published results, or any local run that
+# scripts/run_xsec.py wrote to data/processed/backtests/<run_id>/.
+PUBLISHED = "Published (committed)"
+RUNS_DIR = PROC / "backtests"
+runs = sorted((d.name for d in RUNS_DIR.iterdir()
+               if d.is_dir() and (d / "xsec_ladder.csv").exists()),
+              reverse=True) if RUNS_DIR.exists() else []
+source = st.sidebar.selectbox("Backtest results", [PUBLISHED, *runs])
+src_dir = PROC if source == PUBLISHED else RUNS_DIR / source
+
+if source != PUBLISHED:
+    info_path = src_dir / "run_info.json"
+    if info_path.exists():
+        import json
+        info = json.loads(info_path.read_text())
+        st.sidebar.markdown(
+            f"**Run** `{info.get('run_id')}`  \n"
+            f"data {info.get('data_start')} → {info.get('data_end')}  \n"
+            f"null seeds: {info.get('n_null_seeds')}  \n"
+            f"null Sharpe p95: {info.get('null_sharpe_p95', float('nan')):+.3f}  \n"
+            f"commit: `{info.get('git_commit')}`")
+    st.info(f"Showing local run **{source}** for the ladder, equity curves and "
+            "full statistics. Sections further down (robustness, carry test, "
+            "vol targeting) are the published research figures, not this run.")
+
+ladder = load(str(src_dir), "xsec_ladder.csv")
+curves = load(str(src_dir), "xsec_equity_curves.csv")
 
 if ladder is None:
     st.error("No results found. Run `python scripts/run_xsec.py` first.")
